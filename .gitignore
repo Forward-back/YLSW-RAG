@@ -1,0 +1,35 @@
+# 虚拟环境
+.venv/
+.venv-model/
+venv/
+__pycache__/
+*.pyc
+
+# 语料库（竞赛数据，不推送到远端）
+Data/
+
+# 本地 BGE 模型（运行时挂载 ./models:/app/models，不进仓库）
+models/
+
+# 运行时产物
+faiss_index.bin
+app_run.log
+*.db
+*.sqlite3
+.cache/
+
+# 密钥（.env 含 API Key 与数据库密码）
+.env
+
+# 部署大文件（docker load 产物）
+rag_app_local.tar
+rag_models.tar.gz
+
+# 第三方 skill 与本地工具配置
+academic-figure-skill/
+.claude/
+.exclude
+
+# 评测输出
+test/result/
+*.bak

@@ -1,0 +1,23 @@
+# 本地开发产物与虚拟环境（避免打入构建上下文，否则上下文几个 GB）
+.venv/
+.venv-model/
+venv/
+__pycache__/
+*.pyc
+
+# 本地 BGE 模型不进镜像（compose 运行时挂载 ./models:/app/models）
+models/
+
+# 运行时数据：faiss 索引在容器内自愈重建，日志不入镜像
+faiss_index.bin
+app_run.log
+
+# 密钥不入镜像（compose 通过 env_file 在运行时注入）
+.env
+
+# 测试与评测结果不入镜像
+test/
+
+# 与运行无关的仓库目录（不进 build context）
+academic-figure-skill/
+.claude/

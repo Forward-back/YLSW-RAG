@@ -1,0 +1,75 @@
+# 生产部署（自建 MySQL 容器，发布宿主机回环 6152）：docker compose up -d --build
+# 本地开发（3307 MySQL 容器）：docker compose -f docker-compose.yml -f docker-compose.local.yml up -d --build
+#
+# 主办方服务器为多队共享宿主机：本队端口 = 问答 6151（0.0.0.0 发布）+ MySQL 6152（仅回环发布）。
+# app 走 compose 桥接网络连本栈 mysql（mysql:3306），不依赖宿主机回环；
+# 密码/库名等以 .env 为唯一来源（compose 插值注入，env_file 供 app 其余配置）。
+
+name: rag-forward-rookie
+
+services:
+  mysql:
+    image: docker.1ms.run/library/mysql:8.4.11
+    container_name: rag-forward-rookie-mysql
+    environment:
+      - MYSQL_ROOT_PASSWORD=${MYSQL_PASSWORD}
+      - MYSQL_DATABASE=${MYSQL_DATABASE}
+    command: --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci
+    ports:
+      # 仅发布在宿主机回环（与其他队同构）；6152 为本队分配的 MySQL 端口
+      - "127.0.0.1:6152:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-p${MYSQL_PASSWORD}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "3"
+
+  app:
+    build:
+      context: .
+      args:
+        # 镜像代理前缀（国内构建加速）；海外网络删掉此行
+        BASE_IMAGE: docker.1ms.run/library/python:3.12-slim
+    container_name: rag-forward-rookie-app
+    ports:
+      # 主办方固定问答端口 6151，发布到 0.0.0.0 供评分方访问
+      - "${PORT:-6151}:${PORT:-6151}"
+    volumes:
+      # 本地 BGE 模型目录（BGE_EMBED_BACKEND / BGE_RERANK_BACKEND =local 时挂载；模型文件不进镜像）
+      - ./models:/app/models
+    environment:
+      # 容器内走 compose 网络 DNS 直连本栈 mysql（覆盖 .env 里的宿主机视角值）
+      - MYSQL_HOST=mysql
+      - MYSQL_PORT=3306
+      - MYSQL_USER=root
+      - MYSQL_PASSWORD=${MYSQL_PASSWORD}
+      - MYSQL_DATABASE=${MYSQL_DATABASE}
+    env_file:
+      - .env
+    depends_on:
+      mysql:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:${PORT:-6151}/health', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      # 空库首启全量 ingest 需数分钟；宽限期只延后 unhealthy 判定，服务一旦就绪立即转 healthy
+      start_period: 600s
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "3"
+
+volumes:
+  mysql_data:

@@ -1,0 +1,36 @@
+# 本地开发用：自带 MySQL 容器（宿主机端口 3307 避开本机 MySQL）
+# 用法：docker compose -f docker-compose.yml -f docker-compose.local.yml up -d --build
+# 覆盖生产值：mysql 改用 8.0 镜像 + 弱密码 ABC123 + 库 fuck_rag。
+# 注意：compose 对 ports 是追加合并，生产映射 127.0.0.1:6152 会保留（本地无冲突，仅多余绑定）
+
+services:
+  mysql:
+    # 镜像代理前缀（国内拉取加速）；海外网络改回 mysql:8.0
+    image: docker.1ms.run/library/mysql:8.0
+    ports:
+      - "3307:3306"
+    environment:
+      MYSQL_ROOT_PASSWORD: ABC123
+      MYSQL_DATABASE: fuck_rag
+    command: --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./init.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-pABC123"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
+  app:
+    environment:
+      # 桥接模式下走 compose DNS 直连本栈 mysql 容器（覆盖 .env 的宿主机视角值）
+      - MYSQL_HOST=mysql
+      - MYSQL_PORT=3306
+      - MYSQL_USER=root
+      - MYSQL_PASSWORD=ABC123
+      - MYSQL_DATABASE=fuck_rag
+
+volumes:
+  mysql_data:
