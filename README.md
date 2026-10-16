@@ -46,6 +46,7 @@
 ```
 YLSW_RAG/
 ├── Data/                      # 语料（MAN 手册 / NWS 新闻 / PDT 产品 / REG 法规 / RPT 报告 / TBL 表格）
+│                              #   不入 git 仓库（.gitignore），需自行放入后运行 ingest
 ├── src/
 │   ├── app.py                 # Flask API 入口 + 主查询管线（实体→规划→检索→融合→精排→生成）
 │   ├── config.py              # 全局配置（自动加载 .env）
