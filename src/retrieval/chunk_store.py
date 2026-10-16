@@ -120,13 +120,13 @@ class ChunkStore:
         return results
 
     def org_scope(self, orgs: list) -> dict | None:
-        """机构枚举集合 → 检索范围集合（内存扫描，语义与原 build_org_scope 一致）。
+        """机构集合 → 检索范围集合（内存扫描，语义与原 build_org_scope 一致）。
 
         返回 {"chunk_ids": set, "vector_ids": set}；范围为空返回 None。
         """
         if not orgs:
             return None
-        names = {o.value for o in orgs}
+        names = {o.value if hasattr(o, "value") else o for o in orgs}
         chunk_ids = set()
         vector_ids = set()
         for chunk_id, r in self._by_chunk_id.items():

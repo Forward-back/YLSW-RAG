@@ -73,6 +73,10 @@ ORG_ALIASES = {
     "银商": OrgName.UMS,
     }
 
+# 动态枚举：启动时 sync_entities_from_db 从 DB 同步（硬编码为兜底）
+_DYNAMIC_ORGS: list[str] = []
+_DYNAMIC_PRODUCTS: list[str] = []
+
 
 # ── 已知产品列表（从计划中的产品映射表）───────────────────
 KNOWN_PRODUCTS = [
@@ -102,24 +106,32 @@ class QueryEntities:
     products: list = field(default_factory=list)  # 问题中出现的全部产品名（归一化去重）
 
 
-def find_mentioned_orgs(query: str) -> list:
-    """找出问题中提及的全部机构（枚举值，长优先 + 遮蔽已匹配片段 + 去重）。
+def _org_names(target) -> list[str]:
+    """别名目标 → 规范名列表（OrgName / set[OrgName] / 字符串）。"""
+    if isinstance(target, str):
+        return [target]
+    return [o.value for o in target]
 
-    支持多机构："光大银行和交通银行的B2B网上支付" → [CEB, BCOMM]
-    简称映射："人民银行有哪些规定" → [PBOC]
+
+def find_mentioned_orgs(query: str) -> list[str]:
+    """找出问题中提及的全部机构（规范名字符串，长优先 + 遮蔽已匹配片段 + 去重）。
+
+    支持多机构："光大银行和交通银行的B2B网上支付" → [光大银行, 交通银行]
+    简称映射："人民银行有哪些规定" → [中国人民银行]
     """
-    # 候选：别名（短）与规范名（长）合并，长优先避免 "银联商务" 被 "银联" 类短词截胡
-    candidates = [(k, v) for k, v in ORG_ALIASES.items()]
+    # 候选：别名（短）与规范名（长：硬编码枚举 + DB 动态同步）合并，长优先避免 "银联商务" 被 "银联" 类短词截胡
+    candidates = [(k, _org_names(v)) for k, v in ORG_ALIASES.items()]
     for org in OrgName:
-        candidates.append((org.value, org))
+        candidates.append((org.value, [org.value]))
+    for name in _DYNAMIC_ORGS:
+        candidates.append((name, [name]))
     candidates.sort(key=lambda x: -len(x[0]))
 
     found = []
     remaining = query
-    for name, org in candidates:
+    for name, names in candidates:
         if name in remaining:
-            targets = org if isinstance(org, (set, frozenset)) else [org]
-            found.extend(targets)
+            found.extend(names)
             remaining = remaining.replace(name, " ", 1)
 
     seen = set()
@@ -138,7 +150,7 @@ def find_mentioned_products(query: str) -> list[str]:
     """
     found = []
     remaining = query
-    for p in sorted(KNOWN_PRODUCTS, key=lambda x: -len(x)):
+    for p in sorted(KNOWN_PRODUCTS + _DYNAMIC_PRODUCTS, key=lambda x: -len(x)):
         if p in remaining:
             found.append(_normalize_product_name(p))
             remaining = remaining.replace(p, " ", 1)
@@ -161,7 +173,7 @@ def analyze_query(query: str) -> QueryEntities:
 
     # 机构匹配 —— 全部提及机构（长优先 + 别名归一，支持多机构）
     result.orgs = find_mentioned_orgs(query)
-    result.org = result.orgs[0].value if result.orgs else ""
+    result.org = result.orgs[0] if result.orgs else ""
 
     # 类型意图
     for hint_type, keywords in TYPE_HINTS.items():
@@ -187,9 +199,9 @@ def build_product_mentions(db_conn: pymysql.Connection):
     遍历 KNOWN_PRODUCTS，用子串匹配找出正文中提到产品名的 chunk，
     写入 product_mentions 表。构建只需 5-10 秒，查询时 <1ms。
     """
-    # 归一化后的唯一产品名集合
+    # 归一化后的唯一产品名集合（硬编码 + DB 动态同步）
     unique_products = sorted(set(
-        _normalize_product_name(p) for p in KNOWN_PRODUCTS
+        _normalize_product_name(p) for p in KNOWN_PRODUCTS + _DYNAMIC_PRODUCTS
     ))
     logger.info(f"开始构建产品提及索引，{len(unique_products)} 个产品名")
 
@@ -234,8 +246,63 @@ def build_product_mentions(db_conn: pymysql.Connection):
     logger.info(f"产品提及索引构建完成，共 {len(mentions)} 条记录")
 
 
+def sync_entities_from_db(pool) -> tuple[int, int]:
+    """启动时从 DB 同步机构/产品动态枚举，返回 (新增机构数, 新增产品数)。
+
+    - 机构：chunks.org_name（child 级）distinct，排除空值与"通用"
+    - 产品：chunks.product_name + product_mentions.product_name distinct
+    硬编码枚举为兜底；DB 出现新机构/新产品并入动态集后参与实体检测。
+    新增产品会触发 product_mentions 全量重建（用扩充后的产品集重扫正文）。
+    """
+    global _DYNAMIC_ORGS, _DYNAMIC_PRODUCTS
+
+    conn = pool.connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT DISTINCT org_name FROM chunks "
+                "WHERE chunk_level='child' AND org_name IS NOT NULL AND org_name != ''"
+            )
+            db_orgs = [r[0] for r in cur.fetchall()]
+            cur.execute(
+                "SELECT DISTINCT product_name FROM chunks "
+                "WHERE chunk_level='child' AND product_name IS NOT NULL AND product_name != ''"
+            )
+            db_products = [r[0] for r in cur.fetchall()]
+            cur.execute("SELECT DISTINCT product_name FROM product_mentions")
+            db_products += [r[0] for r in cur.fetchall()]
+    finally:
+        conn.close()
+
+    hardcoded_orgs = {o.value for o in OrgName}
+    hardcoded_products = {_normalize_product_name(p) for p in KNOWN_PRODUCTS}
+
+    new_orgs = sorted({
+        n for n in db_orgs
+        if n and n != "通用" and len(n) >= 2
+        and n not in hardcoded_orgs and n not in _DYNAMIC_ORGS
+    })
+    new_products = sorted({
+        _normalize_product_name(p) for p in db_products
+        if p and p != "通用" and len(p) >= 2
+        and _normalize_product_name(p) not in hardcoded_products
+        and _normalize_product_name(p) not in _DYNAMIC_PRODUCTS
+    })
+
+    if new_orgs:
+        _DYNAMIC_ORGS.extend(new_orgs)
+        logger.info(f"[实体同步] 新增动态机构 {len(new_orgs)} 个: {new_orgs}")
+    if new_products:
+        _DYNAMIC_PRODUCTS.extend(new_products)
+        logger.info(f"[实体同步] 新增动态产品 {len(new_products)} 个: {new_products}")
+        logger.info("[实体同步] 检测到新动态产品，重建 product_mentions 倒排...")
+        build_product_mentions(pool.connection())
+
+    return len(new_orgs), len(new_products)
+
+
 def build_org_scope(db_conn: pymysql.Connection, orgs: list) -> dict | None:
-    """第一层过滤：机构枚举集合 → 检索范围集合。
+    """第一层过滤：机构集合 → 检索范围集合。
 
     多机构取并集。返回 {"chunk_ids": set, "vector_ids": set}；
     范围为空返回 None（调用方回退全范围）。
@@ -243,7 +310,7 @@ def build_org_scope(db_conn: pymysql.Connection, orgs: list) -> dict | None:
     if not orgs:
         return None
 
-    names = [o.value for o in orgs]
+    names = list(orgs)
     with db_conn.cursor() as cur:
         ph = ",".join(["%s"] * len(names))
         cur.execute(

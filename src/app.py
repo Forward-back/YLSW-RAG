@@ -39,7 +39,7 @@ from retrieval.fusion import FusionEngine
 from retrieval.planner import plan_query, execute_plan
 from retrieval.query_filter import (
     MetadataSearcher, analyze_query, QueryEntities,
-    build_product_mentions,
+    build_product_mentions, sync_entities_from_db,
 )
 from prompts import get_tag_content, load_prompt_store
 from llm.generator import generate_answer, generate_synthesis_answer
@@ -123,8 +123,13 @@ def _cleanup():
 
 
 def _ensure_product_mentions():
-    """检测 product_mentions 表是否为空，空则自动构建倒排索引。"""
+    """实体枚举动态同步 + 倒排索引自愈。
+
+    先 sync_entities_from_db 把 DB 机构/产品并入内存枚举（新增产品会触发重建），
+    再检测 product_mentions 空表自动构建。
+    """
     try:
+        sync_entities_from_db(db_pool)
         conn = db_pool.connection()
         try:
             with conn.cursor() as cur:
@@ -198,14 +203,14 @@ def _run_query(question: str, collect_timing: bool = False, collect_trace: bool 
         plan, tag, reject = plan_query(
             question,
             products=[p for p in entities.products] if entities.products else None,
-            orgs=[o.value for o in entities.orgs] if entities.orgs else None,
+            orgs=entities.orgs if entities.orgs else None,
         )
         if reject and (entities.products or entities.orgs):
             # 问题命中已知产品/机构枚举 = 确定性业务问题，覆盖 LLM 的误判拒答
             logger.info(
                 f"[PLANNER] 实体命中覆盖拒答 "
                 f"(产品={list(entities.products)[:3]} "
-                f"机构={[o.value for o in entities.orgs][:3]})"
+                f"机构={entities.orgs[:3]})"
             )
             reject = False
         if reject:
