@@ -36,7 +36,7 @@ from retrieval.bm25_search import BM25Searcher
 from retrieval.chunk_store import ChunkStore
 from retrieval.text_to_sql import TextToSQLEngine
 from retrieval.fusion import FusionEngine
-from retrieval.planner import plan_query, execute_plan
+from retrieval.planner import plan_query, execute_plan, generate_query_variants
 from retrieval.query_filter import (
     MetadataSearcher, analyze_query, QueryEntities,
     build_product_mentions, sync_entities_from_db,
@@ -276,22 +276,36 @@ def _run_query(question: str, collect_timing: bool = False, collect_trace: bool 
                 _tr_list("bm25_hits", [])
                 _tr_list("meta_results", meta_results)
         else:
-            # 类1完整并行检索（faiss+bm25+meta+sql）
-            with ThreadPoolExecutor(max_workers=4) as executor:
-                future_faiss = submit_with_trace(
-                    executor, faiss_searcher.search, expanded_query, FAISS_TOP_K
-                )
-                future_bm25 = submit_with_trace(
-                    executor, bm25_searcher.search, expanded_query, BM25_TOP_K,
-                ) if (bm25_searcher and bm25_searcher.ready) else None
+            # 类1完整并行检索（faiss+bm25+meta+sql）；单步题 multi-query 扩展
+            # 变体 best-effort：LLM 失败/超时静默回退单查询，不改主链路
+            variants: list[str] = []
+            if expanded_query:
+                t_var = time.perf_counter()
+                variants = generate_query_variants(question, expanded_query)
+                if variants:
+                    logger.info(f"[MULTI-QUERY] 变体 {len(variants)} 条: {variants}")
+                _rec("变体生成", t_var, time.perf_counter())
+            queries = [expanded_query] + variants
+            with ThreadPoolExecutor(max_workers=2 + 2 * len(queries)) as executor:
+                faiss_futures = [
+                    submit_with_trace(executor, faiss_searcher.search, q, FAISS_TOP_K)
+                    for q in queries
+                ]
+                bm25_futures = [
+                    submit_with_trace(executor, bm25_searcher.search, q, BM25_TOP_K)
+                    for q in queries
+                ] if (bm25_searcher and bm25_searcher.ready) else []
                 future_meta = submit_with_trace(
                     executor, meta_searcher.search, entities, 20, query_type
                 )
                 future_sql = submit_with_trace(executor, sql_engine.query, expanded_query)
 
-                faiss_hits = future_faiss.result()
+                faiss_hits = _merge_faiss_multi([f.result() for f in faiss_futures])
                 t_faiss = time.perf_counter()
-                bm25_results = future_bm25.result() if future_bm25 else []
+                bm25_results = (
+                    _merge_bm25_multi([f.result() for f in bm25_futures])
+                    if bm25_futures else []
+                )
                 t_bm25 = time.perf_counter()
                 meta_results = future_meta.result()
                 t_meta = time.perf_counter()
@@ -467,6 +481,29 @@ def _resolve_faiss_results(faiss_hits: list) -> list[dict]:
     if not faiss_hits or not chunk_store:
         return []
     return chunk_store.resolve(faiss_hits)
+
+
+def _merge_faiss_multi(hits_lists: list[list[tuple[int, float]]]) -> list[tuple[int, float]]:
+    """多查询 FAISS 结果合并：按 vector_id 去重取最高 score，降序重排。"""
+    best: dict[int, tuple[int, float]] = {}
+    for hits in hits_lists:
+        for vid, score in hits:
+            if vid not in best or score > best[vid][1]:
+                best[vid] = (vid, score)
+    return sorted(best.values(), key=lambda x: x[1], reverse=True)
+
+
+def _merge_bm25_multi(hits_lists: list[list[dict]]) -> list[dict]:
+    """多查询 BM25 结果合并：按 chunk id 去重取最高 score，降序重排。"""
+    best: dict = {}
+    for hits in hits_lists:
+        for item in hits:
+            key = item.get("id") or item.get("chunk_id")
+            if key is None:
+                continue
+            if key not in best or item.get("score", 0) > best[key].get("score", 0):
+                best[key] = item
+    return sorted(best.values(), key=lambda x: x.get("score", 0), reverse=True)
 
 
 _VERSION_RE = re.compile(r"V(\d+)[._](\d+)(?:[._]\d+)*")  # 剥整段版本号 V4.2.7/V1_0

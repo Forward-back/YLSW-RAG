@@ -195,6 +195,51 @@ def _call_llm(prompt: str, max_tokens: int = 512, temperature: float = 0.0) -> s
     return content
 
 
+_VARIANT_PROMPT = """你是检索查询扩展器。把用户问题改写为 2-3 条语义等价的检索查询变体，每条都是独立可用于向量检索的关键词式查询。
+要求：变体覆盖不同措辞与同义表达；不改变原意；必须保留时间限定与文号（如"2024年""银发〔2018〕190号"）。
+只输出 JSON 数组，如：["查询变体1", "查询变体2"]"""
+
+
+def generate_query_variants(question: str, base_query: str) -> list[str]:
+    """单步题 multi-query 扩展（best-effort）。
+
+    对改写后查询生成 2-3 条同义变体，各变体并行检索补偿单条改写不准。
+    单次快试（PLANNER_TIMEOUT，不重试不进长超时救援），失败静默返回 []。
+    """
+    prompt = (
+        f"{_VARIANT_PROMPT}\n\n"
+        f"用户问题：{question}\n改写查询：{base_query}\n"
+        f"只输出 JSON 数组，不要其他内容。"
+    )
+    content = _try_llm(prompt, 256, 0.3, PLANNER_TIMEOUT, retries=1)
+    if content is None:
+        return []
+
+    try:
+        arr = json.loads(content)
+        if not isinstance(arr, list):
+            return []
+    except Exception:
+        m = re.search(r"\[[^\]]*\]", content)
+        if not m:
+            logger.info("[MULTI-QUERY] 变体解析失败，跳过")
+            return []
+        try:
+            arr = json.loads(m.group(0))
+        except Exception:
+            logger.info("[MULTI-QUERY] 变体解析失败，跳过")
+            return []
+
+    out = []
+    for v in arr:
+        v = str(v or "").strip()
+        if v and v != base_query and v != question and v not in out:
+            out.append(v)
+        if len(out) >= 3:
+            break
+    return out
+
+
 def _parse_json(content: str) -> dict | None:
     """宽松解析 LLM 输出的 JSON（容忍 code fence / 前后缀噪声）。"""
     content = content.strip()
