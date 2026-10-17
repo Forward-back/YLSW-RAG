@@ -21,7 +21,12 @@ class ChunkStore:
         self._parent_of: dict = {}         # chunk_id -> parent 行（启动时反查好）
         self._children_by_doc: dict = {}   # document_id -> [(start, end, text), ...] 按 start 排序
         self._child_pos: dict = {}         # (document_id, position_start) -> chunk_id
+        self._summaries: dict = {}         # document_id -> doc_summary
         self._load(pool)
+
+    def summary_of(self, doc_id: int) -> str | None:
+        """文档要点摘要（综述类题上下文前置用），无摘要返回 None。"""
+        return self._summaries.get(doc_id)
 
     # ── 加载 ──────────────────────────────────────────
     def _load(self, pool):
@@ -44,6 +49,11 @@ class ChunkStore:
                     "FROM chunks WHERE chunk_level='parent'"
                 )
                 parents = cur.fetchall()
+
+                cur.execute(
+                    "SELECT id, doc_summary FROM documents WHERE doc_summary IS NOT NULL"
+                )
+                self._summaries = {r["id"]: r["doc_summary"] for r in cur.fetchall()}
         finally:
             conn.close()
 

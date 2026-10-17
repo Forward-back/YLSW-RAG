@@ -144,6 +144,30 @@ def _ensure_product_mentions():
         logger.warning(f"product_mentions 检测/构建跳过: {e}")
 
 
+def _prepend_doc_summaries(contexts: list[str], reranked: list[dict],
+                           query_type: str, planner_multi: bool) -> list[str]:
+    """综述类跨文档题：涉及文档的要点摘要前置到上下文最前（LLM 首因效应）。
+
+    摘要不参与检索，仅组装时补充；单文档题 parent chunk 已覆盖全貌，不追加。
+    """
+    if query_type != "cross_doc" and not planner_multi:
+        return contexts
+    doc_ids, seen = [], set()
+    for c in reranked:
+        d = c.get("document_id")
+        if isinstance(d, int) and d not in seen:
+            seen.add(d)
+            doc_ids.append(d)
+    summaries = []
+    for d in doc_ids:
+        s = chunk_store.summary_of(d) if chunk_store else None
+        if s:
+            summaries.append(f"【文档摘要】{s}")
+    if summaries:
+        logger.info(f"[摘要前置] {len(summaries)} 篇文档摘要加入上下文头部")
+    return summaries + contexts
+
+
 def _run_query(question: str, collect_timing: bool = False, collect_trace: bool = False):
     """主查询管线：实体检测 → 规划器（tag + 计划）→ 并行检索 → RRF → 精排 → Parent → LLM，返回答案文本。
 
@@ -373,6 +397,7 @@ def _run_query(question: str, collect_timing: bool = False, collect_trace: bool 
                 if (tag == "数据查询" and not has_foreach) else None
             ),
         )
+        contexts = _prepend_doc_summaries(contexts, reranked, query_type, planner_multi)
         if collect_trace:
             trace["n_context"] = len(contexts)
             trace["context_chars"] = sum(len(c) for c in contexts)

@@ -18,6 +18,7 @@ CREATE TABLE IF NOT EXISTS documents (
     org_name        VARCHAR(200)  COMMENT '发布机构',
     doc_date        DATE          COMMENT '文档日期',
     doc_title       VARCHAR(500)  COMMENT '清洗后的标题',
+    doc_summary     TEXT          COMMENT '文档要点摘要（综述类题上下文用，严格忠实原文）',
     doc_type        VARCHAR(20)   COMMENT '文档类型: regulation/manual/product/report/news/table/general',
     product_name    VARCHAR(200)  COMMENT '关联产品名，通用表示无特定产品',
     file_hash       VARCHAR(64)   COMMENT '文件 SHA256 哈希，用于幂等检测',
