@@ -85,7 +85,7 @@ CHUNK_CONTEXT_NEIGHBORS = 3  # 法规上下文邻居条数（前后各N条）
 EMBEDDING_DIM = 768
 FAISS_INDEX_TYPE = "HNSW"
 HNSW_M = 32                  # HNSW 图连接数
-HNSW_EF_SEARCH = 40       # HNSW 搜索时探索的节点数（≥top_k，越大精度越高）
+HNSW_EF_SEARCH = 192    # HNSW 搜索时探索的节点数（实测 30 问：ef=192 时 recall@50 达 100%，延迟仅 +0.2ms/次）
 
 # ── 检索参数 ──────────────────────────────────────────
 FAISS_TOP_K = 50
