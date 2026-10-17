@@ -119,7 +119,15 @@ docker compose logs -f app   # 观察 "embedding 进度: x/总数"，全量重�
 
 本机 3306 开发库已于 2026-10-16 用硅基向量重建（1881 chunk / 42s），服务器库若尚未切新通道，部署时必须执行上述重建。
 
-## 5. 验证与回滚
+## 5. 文档摘要回填（2026-10-17 新增）
+
+综述类跨文档题的上下文依赖 `documents.doc_summary` 列（检索不参与，组装时前置）。服务器库首部署后回填一次（118 篇约 6-8 分钟，幂等：已有摘要跳过）：
+
+```bash
+docker exec rag-forward-rookie-app python -u -m src.ingest.summarizer
+```
+
+## 6. 验证与回滚
 
 ```bash
 # 端到端延迟（容器内或宿主机跑 test）
