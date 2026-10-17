@@ -315,11 +315,13 @@ def _validate_plan(plan: dict) -> dict | None:
 
 
 def plan_query(question: str, products: list[str] | None = None,
-               orgs: list[str] | None = None) -> tuple[dict | None, str | None, bool]:
+               orgs: list[str] | None = None) -> tuple[dict | None, str | None, bool, str]:
     """规划 LLM：一次调用输出执行计划 + 问题标签 + 异常判定。
 
-    返回 (plan, tag, reject)：
-    - reject=True：异常问题（闲聊/注入），plan 为 None，调用方直接拒答；
+    返回 (plan, tag, reject, reason)：
+    - reject=True：异常问题（闲聊/注入），plan 为 None；
+      调用方按 reason 分流——injection/unknown 拒答，chitchat 走正常管线
+      （拒答只由注入判定触发，闲聊不拦业务检索）
     - reject=False：plan 失败/非法为 None（调用方回退类1）；
     - tag 在 JSON 解析成功后提取并正则归一，plan 校验失败时仍返回有效标签，
       完全解析失败时为 None。
@@ -335,11 +337,11 @@ def plan_query(question: str, products: list[str] | None = None,
     t0 = time.perf_counter()
     content = _call_llm(prompt, max_tokens=512)
     if content is None:
-        return None, None, False
+        return None, None, False, ""
     data = _parse_json(content)
     if data is None:
         logger.warning(f"[PLANNER] JSON 解析失败: {content[:200]}")
-        return None, None, False
+        return None, None, False, ""
     tag = normalize_tag(data.get("tag"))
     # 严格类型收窄：LLM 偶发输出 "reject": "false"（字符串），bool("false") 会误判为 True
     _reject_raw = data.get("reject")
@@ -349,23 +351,23 @@ def plan_query(question: str, products: list[str] | None = None,
     reason = str(data.get("reason") or "").strip() or "unknown"
     if reject:
         logger.info(
-            f"[PLANNER] 异常问题拒答 (tag={tag or '兜底'} reason={reason}): "
+            f"[PLANNER] 异常问题判定 (tag={tag or '兜底'} reason={reason}): "
             f"{question[:80]}"
         )
-        return None, tag, True
+        return None, tag, True, reason
     plan = _validate_plan(data)
     if plan is None:
         logger.warning(
             f"[PLANNER] plan 校验失败 (tag={tag or '兜底'}): {content[:200]}"
         )
-        return None, tag, False
+        return None, tag, False, reason
     logger.info(
         f"[PLANNER] tag={tag or '兜底'} 计划 {plan['type']} {len(plan['steps'])} steps "
         f"({time.perf_counter() - t0:.1f}s)"
     )
     for s in plan["steps"]:
         logger.info(f"    {s['id']}: deps={s['depends_on']} q={s['query'] or s['query_template'][:60]}")
-    return plan, tag, False
+    return plan, tag, False, reason
 
 
 def _light_retrieve(query: str, deps: dict, emb: list | None = None) -> list[dict]:

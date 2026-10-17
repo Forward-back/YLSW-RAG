@@ -178,6 +178,36 @@ def _style_fragments(style: dict | None) -> list[str]:
     return []
 
 
+def _assemble_contexts(contexts: list[str], max_chars: int,
+                       full_entries: int = 3, min_entry_chars: int = 300) -> str:
+    """上下文拼装：超预算时前 full_entries 条全量（rerank 榜首含答案，保深度），
+    其余按剩余预算均分截断（下限 min_entry_chars，保所有来源代表性）。
+
+    替代"尾丢"策略——多文档对比题被整条丢弃的来源正是漏维度根因。
+    """
+    if not contexts:
+        return ""
+    total = sum(len(c) for c in contexts)
+    if total <= max_chars:
+        return "\n".join(
+            f"--- 参考资料 {i + 1} ---\n{c}" for i, c in enumerate(contexts)
+        )
+    parts = []
+    used = 0
+    n = len(contexts)
+    for i, ctx in enumerate(contexts):
+        if i < full_entries:
+            take = min(len(ctx), max_chars - used)
+        else:
+            cap = max(min_entry_chars, (max_chars - used) // (n - i))
+            take = min(len(ctx), cap)
+        if take <= 0:
+            break
+        parts.append(f"--- 参考资料 {i + 1} ---\n{ctx[:take]}")
+        used += take
+    return "\n".join(parts)
+
+
 def generate_answer(question: str, contexts: list[str],
                     style: dict | None = None,
                     tag_content: str | None = None,
@@ -198,21 +228,15 @@ def generate_answer(question: str, contexts: list[str],
     if not contexts:
         return "抱歉，未找到与您问题相关的信息。请尝试换个方式提问"
 
-    # 组装 Prompt：控制总长度
-    context_text = ""
-    total_chars = 0
-    max_context_chars = MAX_CONTEXT_CHARS
-    for i, ctx in enumerate(contexts):
-        if total_chars + len(ctx) > max_context_chars:
-            break
-        context_text += f"\n--- 参考资料 {i+1} ---\n{ctx}\n"
-        total_chars += len(ctx)
+    # 组装 Prompt：超预算时头部保深度、尾部均分保覆盖（见 _assemble_contexts）
+    context_text = _assemble_contexts(contexts, MAX_CONTEXT_CHARS)
+    total_chars = sum(len(c) for c in contexts)
 
     prompt = build_prompt(question, context_text, style, tag_content)
     t0 = time.perf_counter()
     logger.info(
         f"[LLM] 上下文 {len(contexts)} 条/{total_chars} 字符 "
-        f"(上限 {max_context_chars}) → prompt {len(prompt)} 字符"
+        f"(上限 {MAX_CONTEXT_CHARS}) → prompt {len(prompt)} 字符"
     )
     '''
     return LocalRAGGenerator().chat(prompt)
@@ -256,13 +280,8 @@ def generate_synthesis_answer(question: str, intermediates: list[tuple[str, str]
     if not intermediates and not contexts:
         return "抱歉，未找到与您问题相关的信息。请尝试换个方式提问"
 
-    context_text = ""
-    total_chars = 0
-    for i, ctx in enumerate(contexts):
-        if total_chars + len(ctx) > MAX_CONTEXT_CHARS:
-            break
-        context_text += f"\n--- 参考资料 {i+1} ---\n{ctx}\n"
-        total_chars += len(ctx)
+    context_text = _assemble_contexts(contexts, MAX_CONTEXT_CHARS)
+    total_chars = sum(len(c) for c in contexts)
 
     prompt = build_synthesis_prompt(question, intermediates, context_text, style, tag_content)
     t0 = time.perf_counter()

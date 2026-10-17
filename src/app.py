@@ -144,22 +144,15 @@ def _ensure_product_mentions():
         logger.warning(f"product_mentions 检测/构建跳过: {e}")
 
 
-def _prepend_doc_summaries(contexts: list[str], reranked: list[dict],
-                           query_type: str, planner_multi: bool) -> list[str]:
-    """综述类跨文档题：涉及文档的要点摘要前置到上下文最前（LLM 首因效应）。
+def _prepend_doc_summaries(contexts: list[str], doc_ids: list[int]) -> list[str]:
+    """多步题涉及的文档要点摘要前置到上下文最前（LLM 首因效应）。
 
-    摘要不参与检索，仅组装时补充；单文档题 parent chunk 已覆盖全貌，不追加。
+    仅多步题（planner_multi）追加；单步题 parent chunk 已覆盖全貌。
+    doc_ids 为最终进入上下文的文档（按组装顺序去重，上限 3 篇），
+    避免低分候选文档的摘要混入噪声。
     """
-    if query_type != "cross_doc" and not planner_multi:
-        return contexts
-    doc_ids, seen = [], set()
-    for c in reranked:
-        d = c.get("document_id")
-        if isinstance(d, int) and d not in seen:
-            seen.add(d)
-            doc_ids.append(d)
     summaries = []
-    for d in doc_ids:
+    for d in doc_ids[:3]:
         s = chunk_store.summary_of(d) if chunk_store else None
         if s:
             summaries.append(f"【文档摘要】{s}")
@@ -223,13 +216,19 @@ def _run_query(question: str, collect_timing: bool = False, collect_trace: bool 
         logger.info(f"  query_type: {query_type}")
 
         # ── 0.6 问题规划器（全部问题：一次 LLM 调用出问题标签 + 执行计划 + 异常判定）──
-        # 标签供生成阶段动态提示词；reject 短路直接拒答；计划失败回退类1管线，标签仍生效
-        plan, tag, reject = plan_query(
+        # 标签供生成阶段动态提示词；reject 按 reason 分流：injection/unknown 拒答，
+        # chitchat 放行走正常管线（拒答唯一触发源 = LLM 注入判定，无代码层绕过）
+        plan, tag, reject, reject_reason = plan_query(
             question,
             products=[p for p in entities.products] if entities.products else None,
             orgs=entities.orgs if entities.orgs else None,
         )
-        if reject and (entities.products or entities.orgs):
+        if reject and reject_reason == "chitchat":
+            # 闲聊判定放行走正常管线：业务题可能被误判闲聊（如 ChatGPT 支付题），
+            # 检索空时由生成层空上下文文案兜底；注入判定不受影响
+            logger.info(f"[PLANNER] chitchat 判定放行: {question[:60]}")
+            reject = False
+        elif reject and reject_reason != "injection" and (entities.products or entities.orgs):
             # 问题命中已知产品/机构枚举 = 确定性业务问题，覆盖 LLM 的误判拒答
             logger.info(
                 f"[PLANNER] 实体命中覆盖拒答 "
@@ -396,8 +395,8 @@ def _run_query(question: str, collect_timing: bool = False, collect_trace: bool 
                 SQL_CONTEXT_CAP
                 if (tag == "数据查询" and not has_foreach) else None
             ),
+            planner_multi=planner_multi,
         )
-        contexts = _prepend_doc_summaries(contexts, reranked, query_type, planner_multi)
         if collect_trace:
             trace["n_context"] = len(contexts)
             trace["context_chars"] = sum(len(c) for c in contexts)
@@ -710,7 +709,8 @@ def _append_neighbors(reranked: list[dict], merged: list[dict],
 
 
 def _expand_to_parent_contexts(reranked: list[dict], max_contexts: int = FINAL_TOP_K,
-                               sql_cap: int | None = None) -> list[str]:
+                               sql_cap: int | None = None,
+                               planner_multi: bool = False) -> list[str]:
     """分层上下文组装：每源第 1 条取 parent chunk（完整上下文），其余取 child chunk（节省 token）。
 
     去重：child 完全落在已收录 span 内（同文档）时跳过——Top-1 的 parent 已覆盖其内容，
@@ -800,7 +800,8 @@ def _expand_to_parent_contexts(reranked: list[dict], max_contexts: int = FINAL_T
         label = _build_label(item)
 
         if is_top1 and row.get("parent_text") is not None:
-            text = f"{label}\n{row['parent_text']}" if label else row["parent_text"]
+            # parent 瘦身：2776 字符实测过长，截 1500 保留章节主体（尾部多为冗余操作细节）
+            text = f"{label}\n{row['parent_text'][:1500]}" if label else row["parent_text"][:1500]
             span = (row["p_start"], row["p_end"])
             is_full = True
         else:
@@ -840,7 +841,14 @@ def _expand_to_parent_contexts(reranked: list[dict], max_contexts: int = FINAL_T
 
     total_chars = sum(len(e["text"]) for e in entries)
     logger.info(f"[上下文] 组装 {len(entries)} 条 共 {total_chars} 字符")
-    return [e["text"] for e in entries]
+    texts = [e["text"] for e in entries]
+    if planner_multi:
+        doc_ids = []
+        for e in entries:
+            if e["kind"] == "chunk" and e["doc_id"] not in doc_ids:
+                doc_ids.append(e["doc_id"])
+        texts = _prepend_doc_summaries(texts, doc_ids)
+    return texts
 
 
 @app.route("/health", methods=["GET"])
