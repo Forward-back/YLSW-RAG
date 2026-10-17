@@ -5,7 +5,7 @@ BM25 词法检索（第 4 路）：jieba 分词 + rank_bm25 内存索引。
 查询时返回与 _resolve_faiss_results 同构的 dict 列表，参与 RRF 融合。
 """
 
-import os, sys, logging, time
+import os, sys, re, logging, time
 
 _src = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _src not in sys.path:
@@ -14,6 +14,29 @@ if _src not in sys.path:
 from config import BM25_TOP_K, BM25_K1, BM25_B
 
 logger = logging.getLogger(__name__)
+
+
+# ── 高价值 token 保护 ──────────────────────────────────
+# jieba 会把文号/版本号切碎（"银发〔2018〕190号" → 6 片），查询与文档写法差异
+# （括号/无括号、点/下划线）导致词法路失配。分词前统一归一为纯 ASCII 单 token
+# （jieba 英文模式不切），索引侧与查询侧共用，两侧写法不同也命中同一 token。
+_PROTECT_PATTERNS = [
+    (re.compile(r"银发〔(\d+)〕(\d+)号"), r" wenhao\1\2 "),
+    (re.compile(r"银发(\d{4})年?(\d+)号"), r" wenhao\1\2 "),
+    (re.compile(r"公告〔(\d+)〕第(\d+)号"), r" gonggao\1d\2 "),
+    (re.compile(r"公告(\d{4})第(\d+)号"), r" gonggao\1d\2 "),
+    (re.compile(r"银监办发(\d+)号"), r" yinjianbanfa\1 "),
+    (re.compile(r"银办发(\d+)号"), r" yinbanfa\1 "),
+    (re.compile(r"[Vv](\d+)[._](\d+)(?:[._](\d+))?"), r" v\1\2\3 "),
+    (re.compile(r"([A-Z]{2,})-(\d+)"), r" \1\2 "),
+]
+
+
+def _protect_tokens(text: str) -> str:
+    """文号/版本号/型号归一为单 token（索引与查询两侧共用）。"""
+    for pat, repl in _PROTECT_PATTERNS:
+        text = pat.sub(repl, text)
+    return text
 
 
 class BM25Searcher:
@@ -60,7 +83,12 @@ class BM25Searcher:
                     "doc_date": str(row[10] or "") if row[10] is not None else "",
                     "doc_title": row[11] or "",
                 })
-                corpus.append(jieba.lcut(row[1] or ""))
+                # 标题两次加权 + 文件名（含无括号文号/版本号）+ 正文，统一保护归一
+                index_text = _protect_tokens(
+                    (row[11] or "") + " " + (row[11] or "") + " "
+                    + (row[7] or "") + " " + (row[1] or "")
+                )
+                corpus.append(jieba.lcut(index_text))
 
             from rank_bm25 import BM25Okapi
             self._bm25 = BM25Okapi(corpus, k1=BM25_K1, b=BM25_B)
@@ -88,7 +116,7 @@ class BM25Searcher:
         import jieba
         import numpy as np
 
-        tokens = jieba.lcut(query)
+        tokens = jieba.lcut(_protect_tokens(query))
         scores = self._bm25.get_scores(tokens)
         if allowed_chunk_ids is not None:
             allowed = np.array(
