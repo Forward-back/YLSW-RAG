@@ -15,7 +15,7 @@ import requests
 
 BASE = Path(__file__).resolve().parent
 sys.path.insert(0, str(BASE.parent.parent))
-TESTSET = BASE.parent / "qa_testset_120.json"
+TESTSET = BASE.parent / "produce_question" / "qa_testset_120.json"
 URL = "http://127.0.0.1:6151/chat"
 N = 10
 

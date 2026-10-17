@@ -22,8 +22,8 @@ if sys.stdout and hasattr(sys.stdout, "reconfigure"):
 BASE = Path(__file__).resolve().parent
 TEST = BASE.parent
 
-DB = dict(host="localhost", port=3307, user="root", password="ABC123",
-          database="fuck_rag", charset="utf8mb4")
+DB = dict(host="localhost", port=int(os.environ.get("JUDGE_MYSQL_PORT", "3306")),
+          user="root", password="ABC123", database="fuck_rag", charset="utf8mb4")
 
 API_KEY = os.environ.get("DEEPSEEK_API_KEY", "")
 API_URL = "https://api.deepseek.com/v1/chat/completions"
@@ -50,10 +50,37 @@ def load_chunk_texts(all_ids):
                 f"SELECT id, chunk_text, chunk_level, parent_chunk_id "
                 f"FROM chunks WHERE id IN ({fmt})", list(all_ids))
             rows = cur.fetchall()
+        by_id = {r[0]: {"text": r[1], "level": r[2], "parent": r[3]} for r in rows}
+        missing = len(all_ids) - len(by_id)
+        if missing:
+            print(f"警告: {missing} 个子块 id 在当前库不存在（清库重入后 id 漂移），"
+                  f"将用文档全文回退参考")
+        return by_id
     finally:
         conn.close()
-    by_id = {r[0]: {"text": r[1], "level": r[2], "parent": r[3]} for r in rows}
-    return by_id
+
+
+def load_doc_fallback(doc_names):
+    """失配子块的回退参考：按文档名取全部 child chunk 拼接全文。"""
+    if not doc_names:
+        return {}
+    conn = pymysql.connect(**DB)
+    try:
+        with conn.cursor() as cur:
+            fmt = ",".join(["%s"] * len(doc_names))
+            cur.execute(
+                f"SELECT d.file_name, c.chunk_text "
+                f"FROM documents d JOIN chunks c ON c.document_id = d.id "
+                f"WHERE d.file_name IN ({fmt}) AND c.chunk_level='child' "
+                f"ORDER BY c.document_id, c.position_start",
+                list(doc_names))
+            rows = cur.fetchall()
+    finally:
+        conn.close()
+    out = {}
+    for name, text in rows:
+        out.setdefault(name, []).append(text)
+    return {k: "\n".join(v) for k, v in out.items()}
 
 
 def judge_one(q, answer, ref_text):
@@ -94,7 +121,7 @@ def judge_one(q, answer, ref_text):
 
 
 def main():
-    qs = json.loads((TEST / "qa_testset_120.json").read_text(encoding="utf-8"))
+    qs = json.loads((TEST / "produce_question" / "qa_testset_120.json").read_text(encoding="utf-8"))
     recs = json.loads((BASE / "full_eval_result.json").read_text(encoding="utf-8"))
     qmap = {q["id"]: q for q in qs}
     rmap = {r["id"]: r for r in recs}
@@ -106,17 +133,17 @@ def main():
             all_ids.update(ref.get("子块id") or [])
     chunk_by_id = load_chunk_texts(all_ids)
     print(f"chunk 文本命中 {len(chunk_by_id)}/{len(all_ids)}")
+    doc_names = {ref["父文档id"] for q in qs for ref in (q.get("引用文档id") or [])}
+    doc_fallback = load_doc_fallback(doc_names)
 
     def ref_text_of(q):
+        # 参考依据按文档名取全文（子块 id 在清库重入后已漂移，不可信）
         parts = []
         for ref in q.get("引用文档id") or []:
-            for cid in ref.get("子块id") or []:
-                c = chunk_by_id.get(cid)
-                if not c:
-                    continue
-                parts.append(c["text"])
-                if c["level"] == "child" and c["parent"] in chunk_by_id:
-                    parts.append(chunk_by_id[c["parent"]]["text"])
+            doc_name = ref.get("父文档id")
+            full = doc_fallback.get(doc_name, "") if doc_name else ""
+            if full:
+                parts.append(full)
         return "\n\n".join(parts)
 
     tasks = []

@@ -36,7 +36,7 @@ def hit_at_k(chunks, correct, k):
 
 
 def main():
-    qs = json.loads((TEST / "qa_testset_120.json").read_text(encoding="utf-8"))
+    qs = json.loads((TEST / "produce_question" / "qa_testset_120.json").read_text(encoding="utf-8"))
     records = []
     for i, q in enumerate(qs, 1):
         correct = correct_chunk_ids(q)

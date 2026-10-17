@@ -15,7 +15,7 @@ import requests
 
 BASE = Path(__file__).resolve().parent
 URL = "http://127.0.0.1:6151/chat"
-TESTSET = BASE.parent / "qa_testset_120.json"
+TESTSET = BASE.parent / "produce_question" / "qa_testset_120.json"
 SERIAL = BASE.parent / "Stage_1" / "serial_latency.json"
 MAX_K = 20
 

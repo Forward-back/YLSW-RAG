@@ -30,7 +30,7 @@ EMBED_CONCURRENCY = 8
 
 
 def load_eval_questions():
-    qs = json.loads((BASE.parent / "qa_testset_120.json").read_text(encoding="utf-8"))
+    qs = json.loads((BASE.parent / "produce_question" / "qa_testset_120.json").read_text(encoding="utf-8"))
     stage1_ids = [r["id"] for r in
                   json.loads((BASE.parent / "Stage_1" / "serial_latency.json").read_text(encoding="utf-8"))]
     qmap = {q["id"]: q for q in qs}
