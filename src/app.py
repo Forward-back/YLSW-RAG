@@ -626,7 +626,7 @@ def compute_answer_style(reranked: list[dict], question: str) -> dict:
     return style
 
 
-def _expand_siblings(merged: list[dict], radius: int = 2,
+def _expand_siblings(merged: list[dict], radius: int = 3,
                      max_add: int = 8) -> list[dict]:
     """检索邻域扩展：融合池中每个语料候选的同文档相邻 child 补入池尾部，
     补偿语义检索对相邻条款块（如补贴标准的分段条款）的漏召回。"""
@@ -671,7 +671,7 @@ def _expand_siblings(merged: list[dict], radius: int = 2,
 
 
 def _append_neighbors(reranked: list[dict], merged: list[dict],
-                      radius: int = 5, max_extra: int = 8) -> list[dict]:
+                      radius: int = 8, max_extra: int = 8) -> list[dict]:
     """邻域补全：把融合链中与已入选 chunk 同文档相邻（chunk 序号差 ≤ radius）
     但被精排裁剪的候选补入重排列表尾部，防条款类细节丢失。"""
     selected = []
