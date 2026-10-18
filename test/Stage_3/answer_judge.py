@@ -61,7 +61,11 @@ def load_chunk_texts(all_ids):
 
 
 def load_doc_fallback(doc_names):
-    """失配子块的回退参考：按文档名取全部 child chunk 拼接全文。"""
+    """失配子块的回退参考：按文档名取全部 child chunk 拼接全文。
+
+    xlsx 文档附 tables_structured 表数据（表格类答案来自 SQL 路，
+    chunk 转述里没有具体行数据）。
+    """
     if not doc_names:
         return {}
     conn = pymysql.connect(**DB)
@@ -75,17 +79,45 @@ def load_doc_fallback(doc_names):
                 f"ORDER BY c.document_id, c.position_start",
                 list(doc_names))
             rows = cur.fetchall()
+            xlsx_names = [n for n in doc_names if n.lower().endswith(".xlsx")]
+            table_rows = []
+            if xlsx_names:
+                # 聚合视图而非原始行：LLM 数不清数百行 JSON（曾把 55/38 数成 23/13）
+                fmt2 = ",".join(["%s"] * len(xlsx_names))
+                cur.execute(
+                    f"SELECT d.file_name, t.row_data "
+                    f"FROM documents d JOIN tables_structured t ON t.document_id = d.id "
+                    f"WHERE d.file_name IN ({fmt2}) "
+                    f"ORDER BY t.document_id, t.row_index",
+                    xlsx_names)
+                raw_rows = cur.fetchall()
+                from collections import Counter, defaultdict
+                agg = defaultdict(Counter)
+                for name, row_data in raw_rows:
+                    try:
+                        obj = json.loads(row_data)
+                    except Exception:
+                        continue
+                    for k, v in obj.items():
+                        agg[name][(k, str(v))] += 1
+                for name, counters in agg.items():
+                    lines = []
+                    for (k, v), cnt in counters.most_common():
+                        lines.append(f"{k}={v}({cnt})")
+                    table_rows.append((name, "[表聚合数据]\n" + "\n".join(lines)))
     finally:
         conn.close()
     out = {}
     for name, text in rows:
         out.setdefault(name, []).append(text)
+    for name, row_data in table_rows:
+        out.setdefault(name, []).append(f"[表数据] {row_data}")
     return {k: "\n".join(v) for k, v in out.items()}
 
 
 def judge_one(q, answer, ref_text):
     user = (f"用户问题：{q['问题']}\n\n"
-            f"参考依据：\n{ref_text[:12000]}\n\n"
+            f"参考依据：\n{ref_text[:25000]}\n\n"
             f"系统答案：\n{answer[:3000]}")
     for attempt in range(3):
         try:
