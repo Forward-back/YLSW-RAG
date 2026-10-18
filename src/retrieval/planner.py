@@ -211,7 +211,7 @@ def generate_query_variants(question: str, base_query: str) -> list[str]:
         f"用户问题：{question}\n改写查询：{base_query}\n"
         f"只输出 JSON 数组，不要其他内容。"
     )
-    content = _try_llm(prompt, 256, 0.3, PLANNER_TIMEOUT, retries=1)
+    content = _try_llm(prompt, 256, 0.1, PLANNER_TIMEOUT, retries=1)
     if content is None:
         return []
 

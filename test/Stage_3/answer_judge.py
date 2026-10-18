@@ -85,7 +85,7 @@ def load_doc_fallback(doc_names):
 
 def judge_one(q, answer, ref_text):
     user = (f"用户问题：{q['问题']}\n\n"
-            f"参考依据：\n{ref_text[:4000]}\n\n"
+            f"参考依据：\n{ref_text[:12000]}\n\n"
             f"系统答案：\n{answer[:3000]}")
     for attempt in range(3):
         try:
