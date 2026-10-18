@@ -125,7 +125,7 @@ LOCAL_MODEL = os.getenv("LOCAL_MODEL", "gemma4:26b")
 # ── 通用问答（硅基流动）───────────────────
 DEEPSEEK_MODEL = os.getenv("DEEPSEEK_MODEL", "deepseek-ai/DeepSeek-V4-Flash")
 LLM_MAX_TOKENS = int(os.getenv("LLM_MAX_TOKENS", "1024"))
-LLM_TEMPERATURE = float(os.getenv("LLM_TEMPERATURE", "0.1"))
+LLM_TEMPERATURE = float(os.getenv("LLM_TEMPERATURE", "0.0"))
 
 # ── LLM 输入上下文预算（字符数）─────────────────────────
 MAX_CONTEXT_CHARS = int(os.getenv("MAX_CONTEXT_CHARS", "8000"))
