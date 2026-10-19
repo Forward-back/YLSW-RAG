@@ -170,6 +170,8 @@ class TextToSQLEngine:
         self._real_name_cache: dict[str, str] = {}
         self._entity_values: set[str] | None = None  # 具体站名/代投点值，模板实体防护用
         self._company_values: set[str] | None = None  # 隶属运营公司全部取值，模板公司过滤用
+        self._road_values: list[str] | None = None  # 隶属路段联网名称全部取值（长优先排序）
+        self._dept_values: list[str] | None = None  # 隶属路段集团收费部名称全部取值（长优先排序）
         self._field_name_values: set[str] | None = None  # 清分交易字段字典取值（字段名+中文注释）
         self._column_index: list[dict] = []  # 列语义索引（字段模糊问法检索，启动构建）
         self._table_index: dict[str, list[float]] = {}  # 表描述 embedding（schema linking，启动构建）
@@ -499,11 +501,24 @@ class TextToSQLEngine:
                 tmpls = [t for t in tmpls if t[1] != "隶属运营公司"] + [
                     t for t in tmpls if t[1] == "隶属运营公司"
                 ]
+            if any(kw in question for kw in ("路段", "联网", "分布")):
+                # 问"分布在哪些路段"时"收费站"词先命中的是站名列，须让路段列优先
+                tmpls = [t for t in tmpls if t[1] == "隶属路段联网名称"] + [
+                    t for t in tmpls if t[1] != "隶属路段联网名称"
+                ]
             for keywords, column in tmpls:
                 if any(kw in question for kw in keywords):
                     real_name = self._table_real_name(table_key)
                     if not real_name:
                         return None
+                    # 计数词问法：COUNT(DISTINCT col) 直答，避免列值列举被截断数错
+                    if any(k in question for k in ("多少个", "几个", "共有", "一共", "数量")):
+                        sql = (
+                            f"SELECT COUNT(DISTINCT JSON_UNQUOTE(JSON_EXTRACT(row_data, '$.\"{column}\"'))) AS 数量 "
+                            f"FROM tables_structured WHERE table_name = '{real_name}'"
+                        )
+                        logger.info(f"[SQL模板] 计数 {table_key}.{column}: {question[:60]}")
+                        return sql, table_key
                     if companies:
                         in_list = ", ".join(f"'{c}'" for c in companies)
                         sql = (
@@ -526,10 +541,12 @@ class TextToSQLEngine:
         return None
 
     def _try_count_template(self, question: str) -> tuple[str, str] | None:
-        """计数类确定性模板：'京珠运营公司的收费站数量' → COUNT GROUP BY 运营公司。
+        """计数类确定性模板（三层，防误拦）。
 
-        多公司同问（求差/对比）时 IN 列表 + GROUP BY 一次带出各公司计数。
-        无公司名时（'共多少个收费站'）→ COUNT(*) 全表计数。
+        1. 排序计数："最多/最少/排名前三" → GROUP BY ORDER BY LIMIT
+        2. 条件计数：含具体公司名（+可选路段名双条件）→ WHERE 过滤 COUNT
+        3. 全表计数：仅当含"总共/一共/共有/总计"信号词（否则放行 LLM SQL，
+           防聚合/多条件类问题被 COUNT(*) 短路）
         """
         if not any(k in question for k in ("数量", "多少个", "几个", "几家",
                                            "多少家", "有几", "共计", "共几")):
@@ -539,29 +556,148 @@ class TextToSQLEngine:
         real_name = self._table_real_name("基础信息统计")
         if not real_name:
             return None
+
+        # 1. 排序计数：分组聚合 + 排序 + 限量
+        if any(w in question for w in ("最多", "最少", "最大", "最小", "排名")):
+            limit = 3 if any(w in question for w in ("前三", "前3")) else 1
+            direction = "ASC" if any(w in question for w in ("最少", "最小")) else "DESC"
+            group_col = ("隶属路段集团收费部名称" if "收费部" in question
+                         else "隶属运营公司")
+            sql = (
+                f"SELECT JSON_UNQUOTE(JSON_EXTRACT(row_data, '$.\"{group_col}\"')) AS 分组, "
+                f"COUNT(*) AS 收费站数量 FROM tables_structured "
+                f"WHERE table_name = '{real_name}' "
+                f"GROUP BY 分组 ORDER BY 收费站数量 {direction} LIMIT {max(limit, 2)}"
+            )
+            logger.info(f"[SQL计数模板] 排序计数 by {group_col} {direction} limit {limit}: {question[:60]}")
+            return sql, "基础信息统计"
+
         hit_comps = self._companies_in(question)
+        cond_col = "隶属运营公司"
         if not hit_comps:
+            # 收费部名实体（如"京港澳高速"是收费部值不是公司名）
+            hit_comps = self._dept_in(question)
+            if hit_comps:
+                cond_col = "隶属路段集团收费部名称"
+
+        # 2. 条件计数（公司/收费部 + 可选路段双条件）
+        if hit_comps:
+            roads = self._road_in(question)
+            in_list = ", ".join(f"'{c}'" for c in hit_comps)
+            where = (f"JSON_UNQUOTE(JSON_EXTRACT(row_data, '$.\"{cond_col}\"')) IN ({in_list})")
+            if roads:
+                r_list = ", ".join(f"'{r}'" for r in roads)
+                where += (f" AND JSON_UNQUOTE(JSON_EXTRACT(row_data, '$.\"隶属路段联网名称\"')) "
+                          f"IN ({r_list})")
+                sel = (
+                    f"SELECT JSON_UNQUOTE(JSON_EXTRACT(row_data, '$.\"{cond_col}\"')) AS 分组, "
+                    f"JSON_UNQUOTE(JSON_EXTRACT(row_data, '$.\"隶属路段联网名称\"')) AS 路段, "
+                )
+                grp = "分组, 路段"
+            else:
+                sel = f"SELECT JSON_UNQUOTE(JSON_EXTRACT(row_data, '$.\"{cond_col}\"')) AS 分组, "
+                grp = "分组"
+            sql = (
+                sel + f"COUNT(*) AS 收费站数量 FROM tables_structured "
+                f"WHERE table_name = '{real_name}' AND {where} "
+                f"GROUP BY {grp}"
+            )
+            logger.info(f"[SQL计数模板] 条件计数 by {cond_col} {hit_comps}{'+路段' if roads else ''}: {question[:60]}")
+            return sql, "基础信息统计"
+
+        # 3. 全表计数（收紧触发词，防误拦）
+        if any(k in question for k in ("总共", "一共", "共有", "总计")):
             sql = (
                 f"SELECT COUNT(*) AS 收费站数量 FROM tables_structured "
                 f"WHERE table_name = '{real_name}'"
             )
             logger.info(f"[SQL计数模板] 全表计数: {question[:60]}")
             return sql, "基础信息统计"
-        in_list = ", ".join(f"'{c}'" for c in hit_comps)
+        return None
+
+    def _road_in(self, question: str) -> list[str]:
+        """问题中提及的联网路段名（表内精确匹配，长优先）。"""
+        if self._road_values is None:
+            real = self._table_real_name("基础信息统计")
+            vals: set[str] = set()
+            if real:
+                with self._lock:
+                    with self.conn.cursor() as cur:
+                        cur.execute(
+                            "SELECT DISTINCT JSON_UNQUOTE(JSON_EXTRACT(row_data, %s)) v "
+                            "FROM tables_structured WHERE table_name = %s",
+                            ('$."隶属路段联网名称"', real),
+                        )
+                        vals = {str(r[0]) for r in cur.fetchall() if r[0]}
+            self._road_values = sorted(vals, key=len, reverse=True)
+        return [r for r in self._road_values if r in question]
+
+    def _dept_in(self, question: str) -> list[str]:
+        """问题中提及的收费部名（表内精确匹配，长优先）。"""
+        if self._dept_values is None:
+            real = self._table_real_name("基础信息统计")
+            vals: set[str] = set()
+            if real:
+                with self._lock:
+                    with self.conn.cursor() as cur:
+                        cur.execute(
+                            "SELECT DISTINCT JSON_UNQUOTE(JSON_EXTRACT(row_data, %s)) v "
+                            "FROM tables_structured WHERE table_name = %s",
+                            ('$."隶属路段集团收费部名称"', real),
+                        )
+                        vals = {str(r[0]) for r in cur.fetchall() if r[0]}
+            self._dept_values = sorted(vals, key=len, reverse=True)
+        return [d for d in self._dept_values if d in question]
+
+    def _try_extreme_template(self, question: str) -> tuple[str, str] | None:
+        """极值模板：'经度最大的收费站' → ORDER BY CAST(数值列) LIMIT 1 取名。"""
+        if not any(w in question for w in ("最大", "最小")):
+            return None
+        col = None
+        for kw, c in (("经度", "经度"), ("纬度", "纬度")):
+            if kw in question:
+                col = c
+                break
+        if not col:
+            return None
+        real_name = self._table_real_name("基础信息统计")
+        if not real_name:
+            return None
+        direction = "ASC" if "最小" in question else "DESC"
         sql = (
-            f"SELECT JSON_UNQUOTE(JSON_EXTRACT(row_data, '$.\"隶属运营公司\"')) AS 运营公司, "
-            f"COUNT(*) AS 收费站数量 FROM tables_structured "
-            f"WHERE table_name = '{real_name}' AND "
-            f"JSON_UNQUOTE(JSON_EXTRACT(row_data, '$.\"隶属运营公司\"')) IN ({in_list}) "
-            f"GROUP BY 运营公司"
+            f"SELECT JSON_UNQUOTE(JSON_EXTRACT(row_data, '$.\"收费站名称\"')) AS 收费站名称, "
+            f"CAST(JSON_UNQUOTE(JSON_EXTRACT(row_data, '$.\"{col}\"')) AS DECIMAL(20,8)) AS {col} "
+            f"FROM tables_structured WHERE table_name = '{real_name}' "
+            f"ORDER BY {col} {direction} LIMIT 1"
         )
-        logger.info(f"[SQL计数模板] {hit_comps} 收费站数量: {question[:60]}")
+        logger.info(f"[SQL极值模板] {col} {direction}: {question[:60]}")
+        return sql, "基础信息统计"
+
+    def _try_code_lookup(self, question: str) -> tuple[str, str] | None:
+        """收费站代码反查：'代码为20213的收费站' → WHERE 收费站代码 = 数字。"""
+        if "代码" not in question:
+            return None
+        m = re.search(r"(\d{4,6})", question)
+        if not m:
+            return None
+        real_name = self._table_real_name("基础信息统计")
+        if not real_name:
+            return None
+        sql = (
+            "SELECT JSON_UNQUOTE(JSON_EXTRACT(row_data, '$.\"收费站代码\"')) AS 收费站代码, "
+            "JSON_UNQUOTE(JSON_EXTRACT(row_data, '$.\"收费站名称\"')) AS 收费站名称, "
+            "JSON_UNQUOTE(JSON_EXTRACT(row_data, '$.\"地址\"')) AS 地址, "
+            "JSON_UNQUOTE(JSON_EXTRACT(row_data, '$.\"隶属运营公司\"')) AS 隶属运营公司 "
+            f"FROM tables_structured WHERE table_name = '{real_name}' AND "
+            f"JSON_UNQUOTE(JSON_EXTRACT(row_data, '$.\"收费站代码\"')) = '{m.group(1)}'"
+        )
+        logger.info(f"[SQL代码反查] {m.group(1)}: {question[:60]}")
         return sql, "基础信息统计"
 
     @staticmethod
     def _format_hint(table_key: str, rows: list[dict], field_list: list[str]) -> str:
         """SQL 结果文本：表说明 + 字段清单 + 紧凑 JSON，供生成阶段理解字段语义。"""
-        body = json.dumps(rows, ensure_ascii=False, separators=(",", ":"))
+        body = json.dumps(rows, ensure_ascii=False, separators=(",", ":"), default=str)
         if len(body) > 4000:
             body = body[:4000] + "…(结果已截断)"
         if table_key:
@@ -648,69 +784,79 @@ class TextToSQLEngine:
             logger.debug(f"[SQL] 预筛未命中，跳过: {question[:60]}")
             return None
 
-        # 模板优先：计数类 > 列举类/带实体定点查询，确定性出 SQL，零 LLM 成本
+        # 模板优先：极值 > 计数 > 代码反查 > 列举/定点查询，确定性出 SQL，零 LLM 成本
         table_key = None
-        count_hit = self._try_count_template(question)
-        if count_hit:
-            sql, table_key = count_hit
+        use_fields = False
+        extreme_hit = self._try_extreme_template(question)
+        if extreme_hit:
+            sql, table_key = extreme_hit
         else:
-            template_hit = self._try_template_sql(question)
-            if template_hit:
-                sql, table_key = template_hit
+            count_hit = self._try_count_template(question)
+            if count_hit:
+                sql, table_key = count_hit
             else:
-                entity_hit = self._try_entity_template(question)
-                if entity_hit:
-                    sql, table_key = entity_hit
+                code_hit = self._try_code_lookup(question)
+                if code_hit:
+                    sql, table_key = code_hit
                 else:
-                    field_hit = self._try_field_dict_template(question)
-                    if field_hit:
-                        sql, table_key = field_hit
+                    template_hit = self._try_template_sql(question)
+                    if template_hit:
+                        sql, table_key = template_hit
                     else:
-                        # 模糊字段问法兜底：列语义索引词重叠直接答（零 SQL 零 LLM）
-                        if any(k in question for k in ("字段", "列", "含义")):
-                            cols = self._search_columns(question)
-                            if cols:
-                                body = "\n".join(
-                                    f"{c['column']}（{c['table'][:40]}）: {c['text'][:150]}"
-                                    for c in cols
-                                )
-                                logger.info(
-                                    f"[SQL列索引] 模糊字段命中 {len(cols)} 列 ({_ms()})"
-                                )
-                                return {
-                                    "sql": "",
-                                    "result": [],
-                                    "answer_hint": f"[字段语义匹配]\n{body}",
-                                }
-                        # schema 剪枝：只喂预筛命中的表。无表 key 命中时不调 LLM 判定
-                        # （泛计算词如"多少/统计"的新闻数值题本就无表可查，直接回语料）
-                        hit_keys = self._hit_table_keys(question)
-                        if not hit_keys:
-                            logger.info(f"[SQL] 无表 key 命中，跳过 LLM 判定 ({_ms()})")
-                            return None
-                        schema_info = self.get_schema_info(hit_keys)
-                        if not schema_info or "暂无" in schema_info:
-                            logger.info(f"[SQL] 无可用表格 schema，跳过 ({_ms()})")
-                            return None
+                        entity_hit = self._try_entity_template(question)
+                        if entity_hit:
+                            sql, table_key = entity_hit
+                        else:
+                            field_hit = self._try_field_dict_template(question)
+                            if field_hit:
+                                sql, table_key = field_hit
+                            else:
+                                # 模糊字段问法兜底：列语义索引词重叠直接答（零 SQL 零 LLM）
+                                if any(k in question for k in ("字段", "列", "含义")):
+                                    cols = self._search_columns(question)
+                                    if cols:
+                                        body = "\n".join(
+                                            f"{c['column']}（{c['table'][:40]}）: {c['text'][:150]}"
+                                            for c in cols
+                                        )
+                                        logger.info(
+                                            f"[SQL列索引] 模糊字段命中 {len(cols)} 列 ({_ms()})"
+                                        )
+                                        return {
+                                            "sql": "",
+                                            "result": [],
+                                            "answer_hint": f"[字段语义匹配]\n{body}",
+                                        }
+                                # schema 剪枝：只喂预筛命中的表。无表 key 命中时不调 LLM 判定
+                                # （泛计算词如"多少/统计"的新闻数值题本就无表可查，直接回语料）
+                                hit_keys = self._hit_table_keys(question)
+                                if not hit_keys:
+                                    logger.info(f"[SQL] 无表 key 命中，跳过 LLM 判定 ({_ms()})")
+                                    return None
+                                schema_info = self.get_schema_info(hit_keys)
+                                if not schema_info or "暂无" in schema_info:
+                                    logger.info(f"[SQL] 无可用表格 schema，跳过 ({_ms()})")
+                                    return None
 
-                        prompt = SCHEMA_SEARCH_PROMPT.format(
-                            question=question, schema_info=schema_info
-                        )
+                                prompt = SCHEMA_SEARCH_PROMPT.format(
+                                    question=question, schema_info=schema_info
+                                )
 
-                        sql = self._call_llm_for_sql(prompt)
-                        if sql is None:
-                            logger.warning(f"[SQL] LLM 生成失败 ({_ms()})")
-                            return None
-                        if sql.strip() == "NO_TABLE_NEEDED":
-                            logger.info(f"[SQL] LLM 判定无需查表 ({_ms()})")
-                            return None
-                        # LLM 路径：从 SQL 反推涉及的表，拼表说明
-                        m = re.search(r"table_name\s*=\s*'([^']+)'", sql)
-                        if m:
-                            real = m.group(1)
-                            table_key = next(
-                                (k for k in SQL_TABLE_TRIGGERS if k in real), None
-                            )
+                                sql = self._call_llm_for_sql(prompt)
+                                if sql is None:
+                                    logger.warning(f"[SQL] LLM 生成失败 ({_ms()})")
+                                    return None
+                                if sql.strip() == "NO_TABLE_NEEDED":
+                                    logger.info(f"[SQL] LLM 判定无需查表 ({_ms()})")
+                                    return None
+                                # LLM 路径：从 SQL 反推涉及的表，拼表说明
+                                use_fields = True
+                                m = re.search(r"table_name\s*=\s*'([^']+)'", sql)
+                                if m:
+                                    real = m.group(1)
+                                    table_key = next(
+                                        (k for k in SQL_TABLE_TRIGGERS if k in real), None
+                                    )
 
         sql = _strip_code_fences(sql)
         logger.info(f"[SQL] 生成: {sql[:200]} ({_ms()})")
@@ -725,8 +871,8 @@ class TextToSQLEngine:
                     cur.execute(sql)
                     rows = cur.fetchall()
             logger.info(f"[SQL] 执行成功 {len(rows)} 行 ({_ms()})")
-            rows = rows[:50]
-            field_list = self._table_columns(table_key) if table_key else []
+            rows = rows[:100]
+            field_list = self._table_columns(table_key) if use_fields else []
             return {
                 "sql": sql,
                 "result": rows,
