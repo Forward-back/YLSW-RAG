@@ -171,6 +171,97 @@ class TextToSQLEngine:
         self._entity_values: set[str] | None = None  # 具体站名/代投点值，模板实体防护用
         self._company_values: set[str] | None = None  # 隶属运营公司全部取值，模板公司过滤用
         self._field_name_values: set[str] | None = None  # 清分交易字段字典取值（字段名+中文注释）
+        self._column_index: list[dict] = []  # 列语义索引（字段模糊问法检索，启动构建）
+        self._table_index: dict[str, list[float]] = {}  # 表描述 embedding（schema linking，启动构建）
+        self._build_column_index()
+        self._build_table_index()
+
+    def _build_column_index(self):
+        """列语义索引：表名 + 列名 + 别名 + 含义（row_data 字段字典）jieba 分词。
+
+        服务于模糊字段问法（"与金额相关的字段有哪些"）——词重叠打分直接答，
+        不经 SQL 模板也不经 LLM。
+        """
+        import jieba
+        try:
+            entries = []
+            with self._lock:
+                with self.conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT table_name, column_name, sample_values, alias "
+                        "FROM schema_registry"
+                    )
+                    for tname, cname, samples, alias in cur.fetchall():
+                        entries.append({
+                            "table": tname, "column": cname,
+                            "text": f"{tname} {cname} {alias or ''} {samples or ''}",
+                        })
+                    # 清分表字段字典的 COMMENTS 含义并入（含中文语义）
+                    cur.execute(
+                        "SELECT JSON_UNQUOTE(JSON_EXTRACT(row_data, '$.\"COLUMN_NAME\"')) AS c, "
+                        "JSON_UNQUOTE(JSON_EXTRACT(row_data, '$.\"COMMENTS\"')) AS m "
+                        "FROM tables_structured WHERE table_name LIKE '%清分交易%'"
+                    )
+                    for cname, comments in cur.fetchall():
+                        if not cname:
+                            continue
+                        for e in entries:
+                            if e["column"] == cname and "COMMENTS" not in e["text"]:
+                                e["text"] += f" {comments or ''}"
+                                break
+            for e in entries:
+                e["tokens"] = set(jieba.lcut(e["text"]))
+            self._column_index = entries
+            logger.info(f"[SQL] 列语义索引构建完成: {len(entries)} 列")
+        except Exception as ex:
+            logger.warning(f"[SQL] 列语义索引构建失败（字段模糊检索降级关闭）: {ex}")
+            self._column_index = []
+
+    def _build_table_index(self):
+        """表描述 embedding 索引：多表场景的 schema linking 储备。
+
+        每表条目 = 表名 + 全部列名 + 样例值；BGE 编码存内存。
+        关键词剪枝（_hit_table_keys）未命中时按语义相似度取 top-2 表喂 LLM。
+        """
+        try:
+            from retrieval.faiss_search import get_bge_embeddings
+            tables: dict[str, list[str]] = {}
+            with self._lock:
+                with self.conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT table_name, column_name, sample_values "
+                        "FROM schema_registry ORDER BY table_name, column_name"
+                    )
+                    for tname, cname, samples in cur.fetchall():
+                        tables.setdefault(tname, []).append(
+                            f"{cname}:{samples or ''}"
+                        )
+            texts = {
+                t: f"{t} 列：{'；'.join(cols)}" for t, cols in tables.items()
+            }
+            embs = get_bge_embeddings(list(texts.values()))
+            if embs:
+                self._table_index = {
+                    t: e for t, e in zip(texts.keys(), embs)
+                }
+                logger.info(f"[SQL] 表描述索引构建完成: {len(texts)} 表")
+        except Exception as ex:
+            logger.warning(f"[SQL] 表描述索引构建失败（语义选表降级关闭）: {ex}")
+            self._table_index = {}
+
+    def _search_columns(self, question: str) -> list[dict]:
+        """模糊字段问法检索：词重叠打分取 top 列条目（零 API 成本）。"""
+        if not self._column_index:
+            return []
+        import jieba
+        tokens = set(jieba.lcut(question))
+        scored = []
+        for e in self._column_index:
+            hit = len(tokens & e["tokens"])
+            if hit:
+                scored.append((hit, e))
+        scored.sort(key=lambda x: -x[0])
+        return [e for _, e in scored[:5]]
 
     def _load_entities(self) -> set[str]:
         """载入收费站名称/代投点的全部取值（模板实体防护：问题带具体实体时走 LLM 带 WHERE）。"""
@@ -438,6 +529,7 @@ class TextToSQLEngine:
         """计数类确定性模板：'京珠运营公司的收费站数量' → COUNT GROUP BY 运营公司。
 
         多公司同问（求差/对比）时 IN 列表 + GROUP BY 一次带出各公司计数。
+        无公司名时（'共多少个收费站'）→ COUNT(*) 全表计数。
         """
         if not any(k in question for k in ("数量", "多少个", "几个", "几家",
                                            "多少家", "有几", "共计", "共几")):
@@ -449,7 +541,12 @@ class TextToSQLEngine:
             return None
         hit_comps = self._companies_in(question)
         if not hit_comps:
-            return None
+            sql = (
+                f"SELECT COUNT(*) AS 收费站数量 FROM tables_structured "
+                f"WHERE table_name = '{real_name}'"
+            )
+            logger.info(f"[SQL计数模板] 全表计数: {question[:60]}")
+            return sql, "基础信息统计"
         in_list = ", ".join(f"'{c}'" for c in hit_comps)
         sql = (
             f"SELECT JSON_UNQUOTE(JSON_EXTRACT(row_data, '$.\"隶属运营公司\"')) AS 运营公司, "
@@ -569,6 +666,22 @@ class TextToSQLEngine:
                     if field_hit:
                         sql, table_key = field_hit
                     else:
+                        # 模糊字段问法兜底：列语义索引词重叠直接答（零 SQL 零 LLM）
+                        if any(k in question for k in ("字段", "列", "含义")):
+                            cols = self._search_columns(question)
+                            if cols:
+                                body = "\n".join(
+                                    f"{c['column']}（{c['table'][:40]}）: {c['text'][:150]}"
+                                    for c in cols
+                                )
+                                logger.info(
+                                    f"[SQL列索引] 模糊字段命中 {len(cols)} 列 ({_ms()})"
+                                )
+                                return {
+                                    "sql": "",
+                                    "result": [],
+                                    "answer_hint": f"[字段语义匹配]\n{body}",
+                                }
                         # schema 剪枝：只喂预筛命中的表。无表 key 命中时不调 LLM 判定
                         # （泛计算词如"多少/统计"的新闻数值题本就无表可查，直接回语料）
                         hit_keys = self._hit_table_keys(question)
