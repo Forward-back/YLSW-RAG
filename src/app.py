@@ -31,7 +31,7 @@ install_trace_filter()
 
 from flask import Flask, request, jsonify
 
-from retrieval.faiss_search import FAISSSearcher
+from retrieval.faiss_search import FAISSSearcher, get_bge_embeddings
 from retrieval.bm25_search import BM25Searcher
 from retrieval.chunk_store import ChunkStore
 from retrieval.text_to_sql import TextToSQLEngine
@@ -215,14 +215,22 @@ def _run_query(question: str, collect_timing: bool = False, collect_trace: bool 
             query_type = _detect_query_type(question, entities)
         logger.info(f"  query_type: {query_type}")
 
-        # ── 0.6 问题规划器（全部问题：一次 LLM 调用出问题标签 + 执行计划 + 异常判定）──
+        # ── 0.6 问题规划器 + 变体生成（并行：变体只基于原问题，不依赖改写结果）──
         # 标签供生成阶段动态提示词；reject 按 reason 分流：injection/unknown 拒答，
         # chitchat 放行走正常管线（拒答唯一触发源 = LLM 注入判定，无代码层绕过）
-        plan, tag, reject, reject_reason = plan_query(
-            question,
-            products=[p for p in entities.products] if entities.products else None,
-            orgs=entities.orgs if entities.orgs else None,
-        )
+        with ThreadPoolExecutor(max_workers=2) as _pex:
+            fut_plan = submit_with_trace(
+                _pex, plan_query, question,
+                products=[p for p in entities.products] if entities.products else None,
+                orgs=entities.orgs if entities.orgs else None,
+            )
+            fut_variants = submit_with_trace(
+                _pex, generate_query_variants, question, question
+            )
+            plan, tag, reject, reject_reason = fut_plan.result()
+            _rec("规划改写", t0, time.perf_counter())
+            pre_variants = fut_variants.result() or []
+            _rec("变体生成", t0, time.perf_counter())
         if reject and reject_reason == "chitchat":
             # 闲聊判定放行走正常管线：业务题可能被误判闲聊（如 ChatGPT 支付题），
             # 检索空时由生成层空上下文文案兜底；注入判定不受影响
@@ -300,20 +308,25 @@ def _run_query(question: str, collect_timing: bool = False, collect_trace: bool 
                 _tr_list("meta_results", meta_results)
         else:
             # 类1完整并行检索（faiss+bm25+meta+sql）；单步题 multi-query 扩展
-            # 变体 best-effort：LLM 失败/超时静默回退单查询，不改主链路
-            variants: list[str] = []
-            if expanded_query:
-                t_var = time.perf_counter()
-                variants = generate_query_variants(question, expanded_query)
-                if variants:
-                    logger.info(f"[MULTI-QUERY] 变体 {len(variants)} 条: {variants}")
-                _rec("变体生成", t_var, time.perf_counter())
+            # 变体已在规划阶段并行生成（pre_variants），此处零额外 LLM 调用
+            variants = pre_variants
+            if variants:
+                logger.info(f"[MULTI-QUERY] 变体 {len(variants)} 条: {variants}")
             queries = [expanded_query] + variants
+            # 查询侧批量 embedding：一次 API 调用嵌入全部查询（替代逐条串行往返）
+            embs = get_bge_embeddings(queries) if queries else None
             with ThreadPoolExecutor(max_workers=2 + 2 * len(queries)) as executor:
-                faiss_futures = [
-                    submit_with_trace(executor, faiss_searcher.search, q, FAISS_TOP_K)
-                    for q in queries
-                ]
+                if embs:
+                    faiss_futures = [
+                        submit_with_trace(executor, faiss_searcher.search_vec, e, FAISS_TOP_K)
+                        for e in embs
+                    ]
+                else:
+                    # 批量嵌入失败回退逐条（search 内部自带嵌入与缓存）
+                    faiss_futures = [
+                        submit_with_trace(executor, faiss_searcher.search, q, FAISS_TOP_K)
+                        for q in queries
+                    ]
                 bm25_futures = [
                     submit_with_trace(executor, bm25_searcher.search, q, BM25_TOP_K)
                     for q in queries
