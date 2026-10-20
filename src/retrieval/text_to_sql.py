@@ -123,6 +123,14 @@ SCHEMA_SEARCH_PROMPT = """你是一个数据库查询助手。根据用户问题
 - 表名用 tables_structured，每个 SQL 必须包含 FROM tables_structured 和 WHERE table_name = '实际表名' 条件
 - 数值字段用 CAST 转换类型
 - 询问字段取值列表时用 SELECT DISTINCT 或 GROUP BY 去重
+
+few-shot 示例（模式参考，列名按实际表替换）：
+1. 问"数量最多的公司" → SELECT 分组列, COUNT(*) AS 数量 FROM ... GROUP BY 分组列 ORDER BY 数量 DESC LIMIT 1
+2. 问"X公司且Y路段的记录数" → SELECT 分组列, COUNT(*) AS 数量 FROM ... WHERE 列A='X' AND 列B='Y' GROUP BY 分组列
+3. 问"数值最大的记录名" → SELECT 名称列, CAST(数值列 AS DECIMAL(20,8)) AS 值 FROM ... ORDER BY 值 DESC LIMIT 1
+4. 问"某列共有多少个不同取值" → SELECT COUNT(DISTINCT 列) AS 数量 FROM ...
+5. 多条件组合时每个条件都要写进 WHERE，结果列尽量把条件列一并输出自证
+
 - 只输出 SQL 或 "NO_TABLE_NEEDED"，不要其他内容
 """
 
@@ -518,7 +526,7 @@ class TextToSQLEngine:
                             f"FROM tables_structured WHERE table_name = '{real_name}'"
                         )
                         logger.info(f"[SQL模板] 计数 {table_key}.{column}: {question[:60]}")
-                        return sql, table_key
+                        return sql, table_key, f"（按{column}去重计数）"
                     if companies:
                         in_list = ", ".join(f"'{c}'" for c in companies)
                         sql = (
@@ -529,6 +537,7 @@ class TextToSQLEngine:
                         logger.info(
                             f"[SQL模板] 命中 {table_key}.{column} 过滤公司{companies}: {question[:60]}"
                         )
+                        return sql, table_key, f"（已按隶属运营公司 IN ({', '.join(companies)}) 过滤）"
                     else:
                         sql = (
                             f"SELECT DISTINCT JSON_UNQUOTE(JSON_EXTRACT(row_data, '$.\"{column}\"')) AS 取值 "
@@ -537,7 +546,7 @@ class TextToSQLEngine:
                         logger.info(
                             f"[SQL模板] 命中 {table_key}.{column}: {question[:60]}"
                         )
-                    return sql, table_key
+                    return sql, table_key, ""
         return None
 
     def _try_count_template(self, question: str) -> tuple[str, str] | None:
@@ -752,6 +761,34 @@ class TextToSQLEngine:
             parts.append(head + "\n" + "\n".join(cols))
         return "\n\n".join(parts)
 
+    def _semantic_tables(self, question: str) -> list[str]:
+        """关键词剪枝未命中时的语义选表：问题 embedding 与表描述余弦 top-2（阈值 0.3）。
+
+        新表入库零代码适配：ingest 注册 schema_registry 后自动进表描述索引。
+        """
+        if not self._table_index:
+            return []
+        try:
+            from retrieval.faiss_search import get_bge_embedding
+            q_emb = get_bge_embedding(question)
+            if not q_emb:
+                return []
+            best = []
+            for tname, emb in self._table_index.items():
+                sim = sum(a * b for a, b in zip(q_emb, emb)) / (
+                    (sum(a * a for a in q_emb) ** 0.5)
+                    * (sum(b * b for b in emb) ** 0.5)
+                )
+                best.append((sim, tname))
+            best.sort(key=lambda x: -x[0])
+            hits = [t for s, t in best[:2] if s >= 0.3]
+            if hits:
+                logger.info(f"[SQL语义选表] {hits}（相似度 {[round(s,3) for s,_ in best[:2]]}）")
+            return hits
+        except Exception as e:
+            logger.warning(f"[SQL] 语义选表失败: {e}")
+            return []
+
     def _hit_table_keys(self, question: str) -> list[str]:
         """问题命中的表触发键列表（schema 剪枝依据）。"""
         return [
@@ -787,6 +824,7 @@ class TextToSQLEngine:
         # 模板优先：极值 > 计数 > 代码反查 > 列举/定点查询，确定性出 SQL，零 LLM 成本
         table_key = None
         use_fields = False
+        hint_note = ""
         extreme_hit = self._try_extreme_template(question)
         if extreme_hit:
             sql, table_key = extreme_hit
@@ -801,7 +839,8 @@ class TextToSQLEngine:
                 else:
                     template_hit = self._try_template_sql(question)
                     if template_hit:
-                        sql, table_key = template_hit
+                        sql, table_key = template_hit[0], template_hit[1]
+                        hint_note = template_hit[2] if len(template_hit) > 2 else ""
                     else:
                         entity_hit = self._try_entity_template(question)
                         if entity_hit:
@@ -827,36 +866,11 @@ class TextToSQLEngine:
                                             "result": [],
                                             "answer_hint": f"[字段语义匹配]\n{body}",
                                         }
-                                # schema 剪枝：只喂预筛命中的表。无表 key 命中时不调 LLM 判定
-                                # （泛计算词如"多少/统计"的新闻数值题本就无表可查，直接回语料）
-                                hit_keys = self._hit_table_keys(question)
-                                if not hit_keys:
-                                    logger.info(f"[SQL] 无表 key 命中，跳过 LLM 判定 ({_ms()})")
-                                    return None
-                                schema_info = self.get_schema_info(hit_keys)
-                                if not schema_info or "暂无" in schema_info:
-                                    logger.info(f"[SQL] 无可用表格 schema，跳过 ({_ms()})")
-                                    return None
-
-                                prompt = SCHEMA_SEARCH_PROMPT.format(
-                                    question=question, schema_info=schema_info
-                                )
-
-                                sql = self._call_llm_for_sql(prompt)
-                                if sql is None:
-                                    logger.warning(f"[SQL] LLM 生成失败 ({_ms()})")
-                                    return None
-                                if sql.strip() == "NO_TABLE_NEEDED":
-                                    logger.info(f"[SQL] LLM 判定无需查表 ({_ms()})")
-                                    return None
-                                # LLM 路径：从 SQL 反推涉及的表，拼表说明
-                                use_fields = True
-                                m = re.search(r"table_name\s*=\s*'([^']+)'", sql)
-                                if m:
-                                    real = m.group(1)
-                                    table_key = next(
-                                        (k for k in SQL_TABLE_TRIGGERS if k in real), None
-                                    )
+                                # LLM 路径：schema 剪枝 + 语义选表兜底 + few-shot 生成
+                                llm_hit = self._llm_query(question)
+                                if llm_hit:
+                                    sql, table_key = llm_hit
+                                    use_fields = True
 
         sql = _strip_code_fences(sql)
         logger.info(f"[SQL] 生成: {sql[:200]} ({_ms()})")
@@ -871,16 +885,73 @@ class TextToSQLEngine:
                     cur.execute(sql)
                     rows = cur.fetchall()
             logger.info(f"[SQL] 执行成功 {len(rows)} 行 ({_ms()})")
+
+            # 空结果校验：模板路径实体识别可能错（WHERE 值不精确），回退 LLM 路径重试一次
+            if not rows and not use_fields:
+                logger.info(f"[SQL] 模板空结果，回退 LLM 路径重试 ({_ms()})")
+                retry = self._llm_query(question)
+                if retry:
+                    sql2, table_key2 = retry
+                    if _validate_sql(sql2):
+                        with self._lock:
+                            with self.conn.cursor(pymysql.cursors.DictCursor) as cur:
+                                cur.execute(sql2)
+                                rows2 = cur.fetchall()
+                        if rows2:
+                            logger.info(f"[SQL] LLM 重试命中 {len(rows2)} 行 ({_ms()})")
+                            sql, rows = sql2, rows2[:100]
+                            use_fields = True
+                            table_key = table_key2
+
             rows = rows[:100]
             field_list = self._table_columns(table_key) if use_fields else []
+            if use_fields:
+                hint = self._format_hint(table_key, rows, field_list)
+            else:
+                # 模板路径：结果已按问题条件过滤与排序，显式声明防生成层误读
+                hint = ("查询结果（已按问题条件过滤与排序）{note}:\n"
+                        .format(note=hint_note)
+                        + json.dumps(rows, ensure_ascii=False, separators=(",", ":"),
+                                     default=str))
             return {
                 "sql": sql,
                 "result": rows,
-                "answer_hint": self._format_hint(table_key, rows, field_list),
+                "answer_hint": hint,
             }
         except Exception as e:
             logger.warning(f"[SQL] 执行失败: {e} ({_ms()})")
             return None
+
+    def _llm_query(self, question: str) -> tuple[str, str] | None:
+        """LLM 判定并生成 SQL（模板链未命中或空结果回退时的主路径）。
+
+        返回 (sql, table_key) 或 None。
+        """
+        hit_keys = self._hit_table_keys(question)
+        if not hit_keys:
+            hit_keys = self._semantic_tables(question)
+        if not hit_keys:
+            logger.info(f"[SQL] 无表 key 命中，跳过 LLM 判定")
+            return None
+        schema_info = self.get_schema_info(hit_keys)
+        if not schema_info or "暂无" in schema_info:
+            logger.info(f"[SQL] 无可用表格 schema，跳过")
+            return None
+        prompt = SCHEMA_SEARCH_PROMPT.format(
+            question=question, schema_info=schema_info
+        )
+        sql = self._call_llm_for_sql(prompt)
+        if sql is None:
+            logger.warning(f"[SQL] LLM 生成失败")
+            return None
+        if sql.strip() == "NO_TABLE_NEEDED":
+            logger.info(f"[SQL] LLM 判定无需查表")
+            return None
+        m = re.search(r"table_name\s*=\s*'([^']+)'", sql)
+        table_key = next(
+            (k for k in SQL_TABLE_TRIGGERS if m and k in m.group(1)), None
+        )
+        return _strip_code_fences(sql), table_key
 
     def _call_llm_for_sql(self, prompt: str) -> str | None:
         """调 DeepSeek 生成 SQL。重试策略见 http_client。"""
