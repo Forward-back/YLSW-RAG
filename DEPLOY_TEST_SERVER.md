@@ -61,7 +61,7 @@ curl http://localhost:6151/health   # {"status":"ok"}
 
 ## 3. .env 配置（服务器）
 
-当前 API 通道（2026-10-16 起，不用主办方网关）：
+当前部署形态（2026-10-20）：**embedding 本地模型、其余全走主办方网关**：
 
 ```ini
 # ── MySQL（compose 插值注入；app 容器内被覆盖为 mysql:3306）──
@@ -73,19 +73,17 @@ MYSQL_DATABASE=rag_db
 
 PORT=6151
 
-# ── BGE：硅基流动官方 API ──
-BGE_API_KEY=<用户硅基流动 key>
-BGE_EMBEDDING_URL=https://api.siliconflow.cn/v1/embeddings
-BGE_RERANKER_URL=https://api.siliconflow.cn/v1/rerank
-
-# ── LLM：DeepSeek 官方 API ──
-DEEPSEEK_API_KEY=<用户 DeepSeek key>
-DEEPSEEK_URL=https://api.deepseek.com/v1/chat/completions
-DEEPSEEK_MODEL=deepseek-v4-flash
+# ── 主办方模型网关（key 全网关共用）──
+BGE_API_KEY=<主办方网关 key>
+BGE_EMBEDDING_URL=http://180.76.46.222:8289/v1/embeddings
+BGE_RERANKER_URL=http://180.76.46.222:8289/v1/rerank
+DEEPSEEK_API_KEY=<主办方网关 key>
+DEEPSEEK_URL=http://180.76.46.222:8289/v1/chat/completions
+DEEPSEEK_MODEL=deepseek-ai/DeepSeek-V4-Flash
 
 # ── 多模态图片理解（ingest 用，仅当需要 DOCX 内嵌图片描述）──
-QWEN_API_KEY=<key>
-QWEN_URL=<URL>
+QWEN_API_KEY=<主办方网关 key>
+QWEN_URL=http://180.76.46.222:8289/v1/chat/completions
 QWEN_MODEL=PaddlePaddle/PaddleOCR-VL-1.5
 
 # ── 30s 硬约束超时预算 ──
@@ -96,11 +94,13 @@ GENERATE_TIMEOUT=20
 KEEPALIVE_INTERVAL=480
 API_TIMEOUT=90
 
-# ── BGE 后端开关（gateway=走 API；local=本地推理，需 models 挂载）──
-BGE_EMBED_BACKEND=gateway
+# ── BGE 后端开关：embedding 本地（models/ 挂载）、reranker 网关 ──
+BGE_EMBED_BACKEND=local
 BGE_RERANK_BACKEND=gateway
 LOCAL_MODEL_THREADS=24
 ```
+
+备用通道（用户自有 API）注释保留在 .env 内：硅基流动 BGE（sk-itauoc...）+ DeepSeek 官方（sk-52d6...），切换时取消注释并同步改开关即可。
 
 ## 4. 索引重建注意事项（重要）
 
@@ -117,7 +117,7 @@ docker compose up -d --no-build --force-recreate app
 docker compose logs -f app   # 观察 "embedding 进度: x/总数"，全量重嵌后自建索引
 ```
 
-本机 3306 开发库已于 2026-10-16 用硅基向量重建（1881 chunk / 42s），服务器库若尚未切新通道，部署时必须执行上述重建。
+服务器首启（空库）全量 ingest 自动用 `BGE_EMBED_BACKEND=local` 生成索引，天然同源，无需手动重建。只有**改开关后跑存量库**才需要执行上述重建。本机 3306 开发库的向量是硅基源，若在本机用 local 开关裸机跑，需先重建。
 
 ## 5. 文档摘要回填（2026-10-17 新增）
 
