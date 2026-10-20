@@ -8,8 +8,8 @@
 |---|---|
 | app 服务 | Flask，问答端口 `.env` 的 `PORT`（默认 6151），接口 `POST /chat`、`GET /health` |
 | MySQL ×3 | **生产 = 自建 mysql 容器**（compose 自带 rag-forward-rookie-mysql，宿主机回环 127.0.0.1:6152 发布，root/rag_db）；本地 = **3306 宿主机自装 MySQL**、**3307 compose mysql 容器**（docker-compose.local.yml 自带）。三套数据互相独立，操作前先确认目标库！ |
-| 检索 | FAISS HNSW + BM25 + 元数据 + SQL，RRF 融合，精排走主办方模型网关 BGE-Reranker（无本地模型） |
-| 生成 | 主办方模型网关（http://180.76.46.222:8289/v1）：DeepSeek-V4-Flash（thinking 关闭，实测单跳 0.8-1.3s）+ PaddleOCR-VL 图片识别（冷启动约 16s，QWEN_TIMEOUT=90） |
+| 检索 | FAISS HNSW + BM25 + 元数据 + SQL，RRF 融合；精排 BGE-Reranker v2-m3 走硅基流动 API（`BGE_RERANKER_URL`） |
+| 生成 | DeepSeek 官方 API（`DEEPSEEK_URL=https://api.deepseek.com/v1/chat/completions`，模型 deepseek-v4-flash，thinking 关闭）；BGE embedding 走硅基流动（`BGE_EMBEDDING_URL`）。原主办方网关配置注释保留在 .env 备用 |
 | 索引文件 | `faiss_index.bin`：宿主机根目录一份（裸机跑用）、容器内 `/app/faiss_index.bin` 一份（容器跑用），**互不同步** |
 | 数据卷 | compose mysql 数据卷 `mysql_data`，`down` 不丢数据，`down -v` 才会删库 |
 
@@ -141,27 +141,11 @@ print(r.json()['answer'])"
 9. **git-bash 里 `docker run -e VAR=/路径` 被 MSYS 转成 Windows 路径**：加前缀 `MSYS_NO_PATHCONV=1`。
 10. **pytorch wheel 国内下载（历史，仅当再次需要 torch 时参考）**：阿里 pytorch-wheels 镜像已失效（404）；官方 CPU 索引直连 ~180KB/s 且易超时；走 Clash 代理（`curl -x http://127.0.0.1:7897`）可达 1.5MB/s。本地 wheel 用 pip 安装时文件名必须保留原始 wheel 名（pip 会校验文件名与包元数据）。
 11. **删镜像杀不掉容器/端口**：运行中的容器不依赖磁盘镜像，`docker rmi` 无效，必须 `docker stop`/`docker rm -f` 容器本身。旧版 bridge 部署（ports 端口映射）的 docker-proxy 进程可能在容器被强杀后残留占端口（表现：容器删光端口仍被占）——`ss -tlnp | grep <端口>` 定位 PID 后 kill，或重启 docker daemon。历史部署未固定项目名时旧容器（如 ylsw_rag-app-1）不会被新目录的 `docker compose down` 清掉，需 `docker ps -a` 逐个确认。
-12. **硅基流动 serverless 冷启动（首问 45s 之谜）**：实例冷池后首个请求要 40-60s 加载模型；旧 `API_TIMEOUT=30` 下 planner 首试 30s 超时 + 2s 退避 + 热重试 ≈ 35.8s，叠加生成 ≈ 首问总计 45s。已修：`API_TIMEOUT=90` + entrypoint 起 API 前预热 chat/embedding/rerank（best-effort，失败不阻断启动）。注意：冷池约 10-15 分钟无请求会再次冷却——预热只保证部署后立即测评快，评分若长时间间隔单发仍可能撞冷启动（但只会慢一次，不会超时重试浪费）。
-13. **托管版 V4-Flash 年份错标（"2025年经济热词"飘逸）**：同代码同提示词 A/B 实测——DeepSeek 官方 API 版两次正确指出"资料仅含2024"；硅基流动托管版（主办方网关同源）两次把 2024 热词标成"2025年经济热词包括…"。原因：托管实例指令遵循弱（检查点/量化/服务参数差异），无视【时间核对规则】。已修：BASE_PROMPT 时间核对规则 2 强化为显式禁令+反例（"严禁出现'2025年…包括/有…'式错标"），修复后网关 6/6 不再错标。若主办方换网关模型版本需回归此题。
+12. **网关 serverless 冷启动（历史，2026-10 换 API 通道后缓解）**：实例冷池后首个请求要 40-60s 加载模型；旧 `API_TIMEOUT=30` 下 planner 首试 30s 超时 + 2s 退避 + 热重试 ≈ 35.8s。已修：`API_TIMEOUT=90` + entrypoint 起 API 前预热 chat/embedding/rerank + keepalive 线程（`KEEPALIVE_INTERVAL`）保温。换 DeepSeek 官方 API 后无 serverless 冷池概念，但 keepalive 与预热保留（防任何通道冷启动）。
+13. **托管版 V4-Flash 年份错标（历史，已换官方 API）**：同代码同提示词 A/B 实测——DeepSeek 官方 API 版两次正确指出"资料仅含2024"；硅基流动托管版（主办方网关同源）两次把 2024 热词标成"2025年经济热词包括…"。原因：托管实例指令遵循弱（检查点/量化/服务参数差异），无视【时间核对规则】。已修：BASE_PROMPT 时间核对规则 2 强化为显式禁令+反例（"严禁出现'2025年…包括/有…'式错标"）。2026-10 起 LLM 全部走官方 API，此坑不再复现；若换回托管版需回归此题。
 14. **托管版误拒答与语言规则漂移（2026-09-25 深度测试发现并修复）**：12 题深度测试揪出——(a) "2026年手续费标准/蓝鲸售后服务"两例整体拒答（实体重叠存在，违反拒答规则 1）；(b) "What is 全民付蓝鲸?" 混合中英问题被 detect_language 误判中文（CJK 占比阈值 0.3 太低）。修复：拒答处理规则 2 加"个别细节缺失必须先给已有内容再说明缺失项"+机械式禁止"抱歉，未找到…"整句话术；时间核对规则加"年份缺失不得整体拒答"；detect_language 阈值 0.3→0.5。回归：误拒答/语言规则/正确拒答/年份错标全部通过。
 15. **HTTP 客户端重构（2026-09-25）**：新建 `src/http_client.py`——全局 requests.Session（TCP/TLS 复用，每问省 0.3-0.8s 握手）+ post_json 分类重试（400/401/403/404/422 不重试；429 读 Retry-After，缺失指数退避；5xx/网络异常 2**attempt 退避）。修掉了非 200 无退避 bug（此前三连 429 零间隔连打，日志 13:48:24.437/.787/.941 实锤）。7 个调用点已接入：generator._chat_completion/describe_image、planner、text_to_sql、fusion._call_reranker、faiss_search、pipeline.call_bge_embedding。网关 thinking 参数验证有效（流式 delta 无 reasoning_content）。
 16. **"单步问题跳过精排" A/B 实验（2026-09-25，结论：否决）**：`RERANK_SKIP_SINGLE=1`（fusion.rerank 的 skip_api 参数）对单步问题直走 RRF 排序。16 道单文档题实测：B 侧实际跳过 7 题，**reranked 候选与开精排 0/7 一致**——精排把同文档相邻块顶上候选（如 Q03 开精排全 47xx-48xx 区域 vs 跳过混入 40xx 异文档），省 ~1.3s 但真丢精度。开关代码保留（默认 off）供后续实验；压候选数中间方案收益有限（rerank 耗时与文本量线性，真实长文档 ~1.3s，压到 15 条仅省 0.2-0.4s），未采纳。
 17. **"规划器与检索并行化（投机预取）"实验（2026-09-25，结论：零收益已回滚）**：先用原问题预取四路检索与规划器 LLM 并发。26 题 7 类实测：质量零回归（注入/闲聊/计算/多文档全正常），但**规划器对几乎所有单步题都改写查询**（日志：检索预取命中 0 次 / 检索重跑 13 次），预取结果永远作废 → 零延迟收益（检索仅 150-550ms 且照旧串行）。已完全回滚为串行版。教训：规划器的单步改写是常态不是例外，任何"绕过规划器"的预取都需先验证改写率。
 18. **planner foreach 断裂修复（2026-09-25，重大）**：(a) `_step_query_text` 曾提前把 foreach 占位符替换成 items[0]（逐项展开永远匹配不到，N 个 item 检索同一条查询）——已修为保留 foreach 占位符，负向前瞻清理其他残留；(b) `reject=bool(...)` 对 "false" 字符串误判 True 拒答正常问题——已严格类型收窄；(c) foreach 全空不标 skipped（下游拿空串检索噪声）——已标 skipped+写 summary+传 items；(d) `_call_llm` 响应解析裸奔——已加 try/except + finish_reason=length 截断检查；(e) 中间答案三连修：SQL 候选置顶（语料噪声曾把它挤出可见窗口）、items 在 summary 为空时存活、关键词式查询处理指令 + few-shot 示例（否则托管模型输出空 items 或把问题关键词当实体）。e2e 验证："运营公司邮箱"foreach 题全链路打通（中间答案提取真实公司名 → FOREACH 展开 4 条不同查询 → 无邮箱数据时正确回答"资料中未提供邮箱信息"）。多文档/单文档/注入回归全过。
-19. **网关挂起 90s+（2026-09-27 实测）**：同题连问，规划器 LLM 时好时坏（快时 ~1s、坏时 92.4s = API_TIMEOUT 90s 超时 + 退避 + 重试成功）。精排/生成同批请求正常，仅规划器挂起。**主办方 30s 作答硬约束**下已全链路收紧：规划器两段式 `PLANNER_TIMEOUT=5` 短试 + `PLANNER_LONG_TIMEOUT=5` 救援（全失败回退类1不拒答）；精排 `RERANK_TIMEOUT=5` retries=1（挂起回退 RRF 顺序）；生成 `GENERATE_TIMEOUT=20` retries=1（失败=该题失败）。预算账：单点挂起 ≤25s；规划+精排双挂 5+5+5+2=17s。另加 **keepalive 线程**（app.py `_start_keepalive`，`KEEPALIVE_INTERVAL=480`）每 8 分钟 ping 在走网关的端点，防冷池 10-15 分钟再冷却（冷启动 40-60s 在 30s 预算下必失败，唯一解法是保温）。中间答案 LLM 同走 `_call_llm` 自动受保护。**陈旧连接根因**：卡点恒为每问首个网关调用（规划器），疑网关/LB 静默回收空闲连接导致池化连接半死——http_client 已改每请求 `Connection: close`（不再复用连接，代价 ~100-300ms TLS/次，覆盖 OPS #15 的池化收益，环境已变、可靠性优先）。判据：卡住请求日志若带 `HTTP 请求异常 (attempt 1/3)` 警告=超时+重试成功（陈旧连接或网关丢请求）；无警告=网关慢慢回（慢副本）。
-
-## 6. 常用命令速查
-
-| 操作 | 命令 |
-|---|---|
-| 构建镜像 | `docker compose -f docker-compose.yml -f docker-compose.local.yml build` |
-| 启动（本地栈） | `docker compose -f docker-compose.yml -f docker-compose.local.yml up -d --build` |
-| 启动（生产） | `docker compose up -d --build` |
-| 重建容器（代码生效） | `... build && ... up -d --force-recreate app` |
-| 查看状态 | `docker compose ... ps` |
-| 实时日志 | `docker compose ... logs -f app` |
-| 按请求查日志 | `docker compose ... logs app \| grep req:<trace_id>` |
-| 清库重入（完整流程） | 见 §3.2 + §3.3 |
-| 裸机入库 | `MYSQL_PORT=3307 ./.venv/Scripts/python -m src.ingest.pipeline` |
-| 健康检查 | `curl http://localhost:6151/health` |
-| 冒烟提问 | Python requests → `POST /chat {"question": "..."}` |
+19. **网关挂起 90s+（2026-09-27 实测）**：同题连问，规划器 LLM 时好时坏（快时 ~1s、坏时 92.4s = API_TIMEOUT 90s 超时 + 退避 + 重试成功）。精排/生成同批请求正常，仅规划器挂起。**主办方 30s 作答硬约束**下已全链路收紧：规划器两段式 `PLANNER_TIMEOUT=5` 短试 + `PLANNER_LONG_TIMEOUT=5` 救援（全失败回退类1不拒答）；精排 `RERANK_TIMEOUT=5` retries=1（挂起回退 RRF 顺序）；生成 `GENERATE_TIMEOUT=20` retries=1（失败=该题失败）。预算账：单点挂起 ≤25s；规划+精排双挂 5+5+5+2=17s。另加 **keepalive 线程**（app.py `_start_keepalive`，`KEEPALIVE_INTERVAL=480`）每 8 分钟 ping 在走网关的端点，防冷池 10-15 分钟再冷却。中间答案 LLM 同走 `_call_llm` 自动受保护。**陈旧连接根因**：卡点恒为每问首个网关调用（规划器），疑网关/LB 静默回收空闲连接导致池化连接半死——http_client 已改每请求 `Connection: close`（不再复用连接，代价 ~100-300ms TLS/次，覆盖 OPS #15 的池化收益，环境已变、可靠性优先）。判据：卡住请求日志若带 `HTTP 请求异常 (attempt 1/3)` 警告=超时+重试成功（陈旧连接或网关丢请求）；无警告=网关慢慢回（慢副本）。

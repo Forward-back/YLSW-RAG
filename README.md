@@ -8,22 +8,26 @@
 用户问题
   │
   ├─ 0. 实体检测（非 LLM）：产品/机构/别名 → 类型意图
-  ├─ 0.6 问题规划器（LLM，一次调用）：异常判定 + 问题标签 + 执行计划
+  ├─ 0.6 问题规划器 + 变体生成（两路 LLM 并行）：
+  │       规划器出异常判定（injection 拒答 / chitchat 放行）+ 标签 + 执行计划
   │       tag: 产品咨询/对比分析/操作指南/政策法规/数据查询/概念解读
   │       type: single / parallel_subq（并行子问）/ multi_hop（多跳 + foreach）
+  │       变体：2-3 条同义查询（仅基于原问题，与规划并行）
   │
   ├─ 1-3. 四路并行检索
-  │       ├─ FAISS HNSW 语义检索（BGE-M3，768 维）
-  │       ├─ BM25 词法检索（jieba 分词）
-  │       ├─ 元数据精确匹配（产品/机构 → chunks 表元数据字段）
-  │       └─ Text-to-SQL（结构化表格查询）
+  │       ├─ FAISS HNSW 语义检索（BGE-M3 768 维，批量 embedding，ef_search=192）
+  │       ├─ BM25 词法检索（jieba + 文号/版本号 token 保护 + 标题加权）
+  │       ├─ 元数据精确匹配（产品/机构动态枚举 + 产品提及倒排）
+  │       └─ Text-to-SQL（模板链：极值/计数/代码反查/列举 → 列语义索引 → LLM SQL）
   │
   ├─ 4. RRF 融合（多路共识加分，同 chunk 去重）
-  ├─ 5. BGE-Reranker v2-m3 精排（网关/本地双开关）
-  │       章节多样性选择 + 源配额（meta≤3/5）+ 邻域补全 + 版本去重
-  ├─ 6. Parent-Child 上下文组装（top1 取父块完整上下文，同文档 span 合并）
+  ├─ 5. BGE-Reranker v2-m3 精排（硅基流动 API）
+  │       章节多样性三轮贪心 + 源配额（meta≤3/5）+ 邻域补全（±8）+ 版本去重
+  ├─ 6. Parent-Child 上下文组装（top1 父块 1500 字截断、span 合并、
+  │       多步题文档摘要前置 ≤3 篇、SQL 命中收紧）
   │
-  └─ 7. LLM 生成（DeepSeek-V4-Flash + 标签动态提示词 + 语言适配 + 拒答保护）
+  └─ 7. LLM 生成（DeepSeek 官方 API + 标签动态提示词 + 要点拆解自查
+           + 时间线 CoT + 语言适配 + 拒答保护）
 ```
 
 ## 功能特性
@@ -91,7 +95,7 @@ YLSW_RAG/
 
 ### 1. 配置 .env
 
-在项目根目录创建 `.env`（密钥不进镜像、不入库）：
+在项目根目录创建 `.env`（密钥不进镜像、不入 git）：
 
 ```ini
 # ── MySQL ──
@@ -104,19 +108,22 @@ MYSQL_DATABASE=rag_db
 # ── 服务端口（主办方固定问答端口 6151）──
 PORT=6151
 
-# ── 主办方模型网关（必填三项）──
-BGE_API_KEY=<BGE key>
-DEEPSEEK_API_KEY=<DeepSeek key>
-QWEN_API_KEY=<Qwen key>
-# 网关地址默认已内置（http://180.76.46.222:8289/v1/...），如需覆盖：
-# BGE_EMBEDDING_URL / BGE_RERANKER_URL / DEEPSEEK_URL / QWEN_URL
+# ── 模型 API（当前通道：LLM=DeepSeek 官方，BGE=硅基流动）──
+DEEPSEEK_API_KEY=<DeepSeek 官方 key>
+DEEPSEEK_URL=https://api.deepseek.com/v1/chat/completions
+DEEPSEEK_MODEL=deepseek-v4-flash
+BGE_API_KEY=<硅基流动 key>
+BGE_EMBEDDING_URL=https://api.siliconflow.cn/v1/embeddings
+BGE_RERANKER_URL=https://api.siliconflow.cn/v1/rerank
 
-# ── BGE 后端开关（可选，默认 gateway）──
-# embedding / reranker 可独立切换 gateway=主办方网关 / local=本地模型推理
-# local 模式需挂载 models/ 目录（bge-m3 / bge-reranker-v2-m3）
-BGE_EMBED_BACKEND=gateway
-BGE_RERANK_BACKEND=gateway
+# ── 30s 硬约束超时预算 ──
+PLANNER_TIMEOUT=5
+RERANK_TIMEOUT=5
+GENERATE_TIMEOUT=20
+KEEPALIVE_INTERVAL=480
 ```
+
+服务器部署的完整 .env 与注意事项见 [DEPLOY_TEST_SERVER.md](DEPLOY_TEST_SERVER.md)。
 
 ### 2. 启动（Docker）
 
@@ -174,12 +181,13 @@ curl -X POST http://localhost:6151/chat \
 | 环节 | 设计 |
 |---|---|
 | 分块 | Parent-Child：child 300 token 检索 / parent 1200 token 上下文；法规按条、手册按节、新闻整篇；标题链前缀补上下文 |
-| 嵌入 | BGE-M3 截断前 768 维（官方建议，索引内存 -25%），FAISS HNSW（M=32, ef_search=40） |
+| 嵌入 | BGE-M3 截断前 768 维（官方建议，索引内存 -25%），FAISS HNSW（M=32, ef_search=192，实测 recall@50 100% 拐点） |
 | 融合 | RRF 四路融合，同 chunk 多路命中加分（共识提升）；SQL 命中固定高分位 |
-| 精排 | BGE-Reranker v2-m3；多跳问题对原问 + 各子问多路打分取最大；章节多样性三轮贪心（概述类不整章缺料）；源配额 meta≤3（跨文档≤5）；低分元数据不占配额 |
-| 上下文 | top1 每源取 parent 完整上下文，其余 child；同文档 span 相邻合并去重；邻域补全（±5）防条款细节丢失；同文档多版本只留最新版 |
-| 规划器 | 一次 LLM 调用出标签+计划；parallel_subq 并行检索；multi_hop 中间答案（summary+items）供 foreach 展开；全失败回退单步管线 |
-| 生成 | 标签动态提示词 + 时间核对规则 + 语言适配（中英提问/文档交叉）+ 拒答规则（部分信息也必须作答） |
+| 精排 | BGE-Reranker v2-m3；多步题对原问 + 各子问多路打分取最大；章节多样性三轮贪心（概述类不整章缺料）；源配额 meta≤3（跨文档≤5）；低分元数据不占配额 |
+| 上下文 | top1 每源取 parent（1500 字截断），其余 child；同文档 span 相邻合并去重；邻域补全（±8）防条款细节丢失；同文档多版本只留最新版；多步题文档摘要前置（≤3 篇，见 summarizer.py 回填） |
+| 规划器 | 规划 LLM 与变体生成并行；parallel_subq 并行检索；multi_hop 中间答案（summary+items）供 foreach 展开；chitchat 放行走正常管线，仅 injection 拒答；全失败回退单步管线 |
+| 生成 | 标签动态提示词 + 要点拆解自查 + 时间线 CoT（多文号逐文对照）+ 数值误差声明 + 语言适配 + 拒答规则 |
+| SQL 路 | 模板链（极值/计数/代码反查/列举，确定性零 LLM）→ 列语义索引（模糊字段问法）→ LLM SQL（schema 剪枝 + 语义选表 + few-shot）；模板空结果自动回退 LLM 重试 |
 
 ## 测试与评测
 
@@ -205,8 +213,6 @@ python test/smoke_local.py
 
 ## 注意事项
 
-- **30s 硬约束**：主办方要求单问 30s 内作答。超时预算规划 5+5s / 精排 5s / 生成 20s；网关 serverless 冷启动 40-60s，靠预热 + keepalive（`KEEPALIVE_INTERVAL`）保温
-- **索引一致性**：清库后必须同步删除 `faiss_index.bin`（或 force-recreate 容器走自愈），否则向量与 DB 错位、检索全错
-- **改分块参数需清库重入**：ingest 幂等只比对文件哈希，改 `chunker.py`/chunk 参数不清库不生效
-- **BGE 后端切换需重建索引**：本地与网关向量非同源，切换 `BGE_EMBED_BACKEND` 后必须重建索引
-- **密钥安全**：`.env` 已被 `.dockerignore` 排除，勿将密钥提交或打入镜像
+- **30s 硬约束**：超时预算规划 5s / 精排 5s / 生成 20s，单点挂起自动降级；网关冷池靠预热 + keepalive（`KEEPALIVE_INTERVAL`）保温
+- **清库/改分块/换 embedding 源的操作红线**：详见 [OPS.md](OPS.md) §3 与 §5（索引错位、幂等跳过等历史事故与解法）
+- **密钥安全**：`.env` 已被 `.gitignore` / `.dockerignore` 排除，勿将密钥提交或打入镜像
