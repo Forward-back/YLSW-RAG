@@ -428,6 +428,21 @@ class TextToSQLEngine:
         self._company_values = {c for c in companies if len(c) >= 2}
         return self._company_values
 
+    def _ensure_connection(self):
+        """连接自愈：服务端闲置超时会关闭连接（首次 SQL 查询报 (0, '')）。
+
+        ping 探活，断开则重建连接。调用方需持有 _lock 或在单线程启动期调用。
+        """
+        try:
+            self.conn.ping(reconnect=True)
+        except Exception as e:
+            logger.warning(f"[SQL] 连接失效，重建: {e}")
+            try:
+                self.conn.close()
+            except Exception:
+                pass
+            self.conn = pymysql.connect(**MYSQL_CONFIG, autocommit=True)
+
     def _companies_in(self, question: str) -> list[str]:
         return [c for c in self._load_companies() if c in question]
 
@@ -808,6 +823,24 @@ class TextToSQLEngine:
         return False
 
     def query(self, question: str) -> dict | None:
+        """执行 Text-to-SQL 查询（带外层兜底）。
+
+        SQL 路任何内部异常（连接失效/模板异常等）降级为 None，
+        不影响语料路与整条请求链路。
+        """
+        try:
+            with self._lock:
+                self._ensure_connection()
+        except Exception as e:
+            logger.warning(f"[SQL] 连接自愈失败，SQL 路降级: {e}")
+            return None
+        try:
+            return self._query_impl(question)
+        except Exception as e:
+            logger.warning(f"[SQL] 查询异常，SQL 路降级: {e}", exc_info=True)
+            return None
+
+    def _query_impl(self, question: str) -> dict | None:
         """执行 Text-to-SQL 查询：模板优先，LLM 生成兜底。
 
         Returns: {"sql": "...", "result": [...], "answer_hint": "..."} 或 None
