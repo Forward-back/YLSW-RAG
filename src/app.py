@@ -370,6 +370,25 @@ def _run_query(question: str, collect_timing: bool = False, collect_trace: bool 
             _rec("RRF融合", t_sql, t_rrf)
 
         # ── 5. Reranker 精排 + 源配额 ──
+        # 空池短路：四路全空（闲聊/完全无关问题）跳过精排与后续管线
+        if not merged:
+            logger.info("[检索] 融合池为空，跳过精排与生成，直接回未找到")
+            _rec("精排rerank", t_rrf, time.perf_counter())
+            _rec("parent上下文", t_rrf, time.perf_counter())
+            _rec("LLM生成", t_rrf, time.perf_counter())
+            _rec("总计", t0, time.perf_counter())
+            if collect_trace:
+                trace["query_type"] = query_type
+                trace["planner_multi"] = planner_multi
+                trace["faiss_hits"] = []
+                trace["bm25_hits"] = []
+                trace["meta_results"] = []
+                trace["rrf_merged"] = []
+                trace["reranked"] = []
+                trace["n_context"] = 0
+                trace["context_chars"] = 0
+            msg = "抱歉，未找到与您问题相关的信息。请尝试换个方式提问"
+            return (msg, timing, trace) if (collect_timing or collect_trace) else msg
         # top_k 留补位余量：上下文组装会跳过与已选 parent 重叠的 child，需要候选补位
         # 规划路径：对原问题 + 各 step 检索文本多路打分取最大值（防第二问语义稀释）
         # A/B 开关：RERANK_SKIP_SINGLE=1 时单步问题跳过精排 API（RRF 排序直出）

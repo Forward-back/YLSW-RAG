@@ -3,6 +3,7 @@ RRF 融合 + BGE-Reranker 重排序。
 """
 
 import os, sys, time, logging, re
+from concurrent.futures import ThreadPoolExecutor
 import requests
 
 _src = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -311,8 +312,18 @@ class FusionEngine:
                 documents = [c["text"][:5000] for c in rerank_candidates]
                 if sub_queries:
                     scores: dict[int, float] = {}
-                    for q in [query] + list(sub_queries):
-                        res = self._call_reranker(q, documents)
+                    qs = [query] + list(sub_queries)
+                    # 多路打分并行：同一批文档 × 不同查询串，调用互相独立；
+                    # 多跳依赖只影响检索顺序，精排阶段候选已固定，并行安全。
+                    # 本地 reranker 后端保守串行（CPU 模型并发推理无保障）
+                    if BGE_RERANK_BACKEND == "local" or len(qs) == 1:
+                        rerank_batches = [self._call_reranker(q, documents) for q in qs]
+                    else:
+                        with ThreadPoolExecutor(max_workers=len(qs)) as _rex:
+                            rerank_batches = list(
+                                _rex.map(lambda q: self._call_reranker(q, documents), qs)
+                            )
+                    for res in rerank_batches:
                         if not res:
                             continue
                         for item in res:
