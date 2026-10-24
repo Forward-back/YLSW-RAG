@@ -20,7 +20,7 @@ import faiss
 import numpy as np
 
 from ingest import chunker
-from config import DATA_DIR, EMBEDDING_DIM
+from core.config import DATA_DIR, EMBEDDING_DIM
 from retrieval.faiss_search import get_bge_embedding
 
 MATRIX_PARAMS = [(500, 128), (300, 256), (500, 256)]
@@ -98,7 +98,7 @@ def baseline_recall(questions, k):
     vector_id → chunk → document 映射查 MySQL(3307)。"""
     sys.path.insert(0, str(ROOT))
     import pymysql
-    from config import MYSQL_CONFIG
+    from core.config import MYSQL_CONFIG
     conn = pymysql.connect(host="127.0.0.1", port=3307, user="root",
                            password="ABC123", database="fuck_rag")
     cur = conn.cursor()

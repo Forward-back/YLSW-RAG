@@ -5,13 +5,13 @@ FAISS 索引重建脚本 —— 增量构建，复用 ingest 管线的 _build_fa
 import sys, os, logging
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "src"))
 
-from utils import setup_windows_console
+from core.utils import setup_windows_console
 setup_windows_console()
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("rebuild")
 
-from config import MYSQL_CONFIG
+from core.config import MYSQL_CONFIG
 from ingest.pipeline import DB, _build_faiss_index
 
 

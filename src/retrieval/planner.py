@@ -20,13 +20,13 @@ import requests
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 
-from config import (
+from core.config import (
     DEEPSEEK_URL, DEEPSEEK_API_KEY, DEEPSEEK_MODEL, API_TIMEOUT,
     PLANNER_TIMEOUT, PLANNER_LONG_TIMEOUT,
 )
-from http_client import post_json
+from core.http_client import post_json
 from prompts import PROMPT_TAGS, normalize_tag
-from prompt_guard import escape_user_input
+from core.prompt_guard import escape_user_input
 from retrieval.faiss_search import get_bge_embeddings
 
 logger = logging.getLogger(__name__)

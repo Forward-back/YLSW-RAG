@@ -15,8 +15,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(
 import numpy as np
 import requests
 
-from config import BGE_EMBEDDING_URL, BGE_API_KEY, EMBEDDING_DIM, API_TIMEOUT
-from models_singleton import encode_texts
+from core.config import BGE_EMBEDDING_URL, BGE_API_KEY, EMBEDDING_DIM, API_TIMEOUT
+from core.models_singleton import encode_texts
 
 TEXTS = [
     "2024年经济热词有哪些",

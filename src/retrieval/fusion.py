@@ -10,13 +10,13 @@ _src = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _src not in sys.path:
     sys.path.insert(0, _src)
 
-from config import (
+from core.config import (
     RRF_K, FINAL_TOP_K, BGE_RERANKER_URL, BGE_API_KEY,
     API_TIMEOUT, API_MAX_RETRIES, RERANK_META_MIN_SCORE,
     RERANK_MAX_CANDIDATES_PER_SOURCE, CHUNK_CONTEXT_NEIGHBORS,
     BGE_RERANK_BACKEND, RERANK_TIMEOUT,
 )
-from http_client import post_json
+from core.http_client import post_json
 
 logger = logging.getLogger(__name__)
 
@@ -408,7 +408,7 @@ class FusionEngine:
     def _call_reranker(self, query: str, documents: list[str]) -> list[dict] | None:
         """BGE-Reranker 打分（网关 API 或本地模型，BGE_RERANK_BACKEND 控制）。"""
         if BGE_RERANK_BACKEND == "local":
-            from models_singleton import rerank_scores
+            from core.models_singleton import rerank_scores
             scores = rerank_scores(query, documents)
             if scores is None:
                 logger.warning("本地 Reranker 打分失败")

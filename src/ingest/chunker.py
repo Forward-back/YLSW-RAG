@@ -15,7 +15,7 @@ _src = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _src not in sys.path:
     sys.path.insert(0, _src)
 
-from config import (
+from core.config import (
     CHILD_CHUNK_SIZE, PARENT_CHUNK_SIZE, CHUNK_OVERLAP, CHUNK_CONTEXT_NEIGHBORS,
 )
 from ingest.doc_classifier import classify_document_type

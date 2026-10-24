@@ -12,9 +12,9 @@ _src = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _src not in sys.path:
     sys.path.insert(0, _src)
 
-from config import MYSQL_CONFIG, DEEPSEEK_URL, DEEPSEEK_API_KEY, DEEPSEEK_MODEL
-from http_client import post_json
-from utils import setup_windows_console
+from core.config import MYSQL_CONFIG, DEEPSEEK_URL, DEEPSEEK_API_KEY, DEEPSEEK_MODEL
+from core.http_client import post_json
+from core.utils import setup_windows_console
 
 setup_windows_console()
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")

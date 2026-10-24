@@ -6,12 +6,12 @@ _src = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _src not in sys.path:
     sys.path.insert(0, _src)
 
-from config import (
+from core.config import (
     FAISS_TOP_K, HNSW_EF_SEARCH, EMBEDDING_DIM,
     BGE_EMBEDDING_URL, BGE_API_KEY, API_TIMEOUT, API_MAX_RETRIES,
     DATA_DIR, BGE_EMBED_BACKEND,
 )
-from http_client import post_json
+from core.http_client import post_json
 
 logger = logging.getLogger(__name__)
 
@@ -42,7 +42,7 @@ def _get_bge_embeddings(texts: list[str], model: str = "BAAI/bge-m3") -> list[li
     if not cacheable:
         return [_EMB_CACHE[t] for t in texts]
     if BGE_EMBED_BACKEND == "local":
-        from models_singleton import encode_texts
+        from core.models_singleton import encode_texts
         embs = encode_texts(cacheable, EMBEDDING_DIM)
         if embs is None:
             logger.warning("本地 BGE embedding 失败")

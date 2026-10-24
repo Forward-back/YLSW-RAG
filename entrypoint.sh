@@ -69,11 +69,11 @@ python -m src.ingest.pipeline
 echo "===== Warming up models (best-effort) ====="
 python - <<'PYEOF'
 import os
-from src.config import BGE_EMBED_BACKEND, BGE_RERANK_BACKEND
+from src.core.config import BGE_EMBED_BACKEND, BGE_RERANK_BACKEND
 
 # 本地模型预热（仅对应开关为 local 时加载）
 if BGE_EMBED_BACKEND == "local" or BGE_RERANK_BACKEND == "local":
-    from src.models_singleton import encode_texts, rerank_scores
+    from src.core.models_singleton import encode_texts, rerank_scores
     for name, backend, fn in [
         ("embedding", BGE_EMBED_BACKEND, lambda: encode_texts(["预热"], 768)),
         ("reranker", BGE_RERANK_BACKEND, lambda: rerank_scores("预热", ["预热"])),
@@ -88,7 +88,7 @@ if BGE_EMBED_BACKEND == "local" or BGE_RERANK_BACKEND == "local":
 
 # 网关预热（chat 恒走网关；embedding/rerank 仅对应开关为 gateway 时）
 import requests
-from src.config import (
+from src.core.config import (
     BGE_EMBEDDING_URL, BGE_API_KEY, BGE_RERANKER_URL,
     DEEPSEEK_URL, DEEPSEEK_API_KEY, DEEPSEEK_MODEL,
 )

@@ -4,7 +4,7 @@ import os
 from pathlib import Path
 
 # 自动加载项目根目录的 .env 文件
-_dotenv_path = Path(__file__).resolve().parent.parent / ".env"
+_dotenv_path = Path(__file__).resolve().parent.parent.parent / ".env"
 if _dotenv_path.exists():
     with open(_dotenv_path, encoding="utf-8") as _f:
         for _line in _f:
@@ -17,7 +17,7 @@ if _dotenv_path.exists():
                 os.environ[_key] = _val
 
 # ── 路径 ──────────────────────────────────────────────
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 DATA_DIR = os.path.join(BASE_DIR, "Data")
 
 # ── MySQL 连接 ─────────────────────────────────────────

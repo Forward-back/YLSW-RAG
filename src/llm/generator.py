@@ -4,15 +4,15 @@ _src = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _src not in sys.path:
     sys.path.insert(0, _src)
 
-from config import (
+from core.config import (
     DEEPSEEK_URL, DEEPSEEK_API_KEY, DEEPSEEK_MODEL,
     QWEN_URL, QWEN_API_KEY, QWEN_MODEL, QWEN_MAX_TOKENS,
     LLM_MAX_TOKENS, LLM_TEMPERATURE, API_TIMEOUT, GENERATE_TIMEOUT,
     MAX_CONTEXT_CHARS,
     OLLAMA_BASE_URL, LOCAL_MODEL,
 )
-from prompt_guard import escape_user_input, REFUSAL_ANSWER
-from http_client import post_json
+from core.prompt_guard import escape_user_input, REFUSAL_ANSWER
+from core.http_client import post_json
 
 logger = logging.getLogger(__name__)
 

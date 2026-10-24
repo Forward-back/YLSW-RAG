@@ -10,8 +10,8 @@ import time
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src"))
 
-from config import EMBEDDING_DIM
-from models_singleton import encode_texts, rerank_scores
+from core.config import EMBEDDING_DIM
+from core.models_singleton import encode_texts, rerank_scores
 
 QUERIES = ["什么是机器学习", "2024年经济热词有哪些", "扫码支付的费率是多少"]
 

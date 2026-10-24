@@ -18,9 +18,9 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from utils import _CN_DIGIT, setup_windows_console
-from http_client import post_json
-from config import (
+from core.utils import _CN_DIGIT, setup_windows_console
+from core.http_client import post_json
+from core.config import (
     MYSQL_CONFIG, DATA_DIR, BGE_EMBEDDING_URL, BGE_API_KEY,
     EMBEDDING_DIM, HNSW_M, API_TIMEOUT, API_MAX_RETRIES,
     QWEN_TIMEOUT, QWEN_CONCURRENCY, QWEN_VL_IMAGE_MIME_TYPES,
@@ -403,7 +403,7 @@ def _extract_and_describe_images(file_path: str, file_type: str) -> list[str]:
 def call_bge_embedding(texts: list[str]) -> list[list[float]] | None:
     """批量获取 BGE-M3 embedding（网关 API 或本地模型，BGE_EMBED_BACKEND 控制）。"""
     if BGE_EMBED_BACKEND == "local":
-        from models_singleton import encode_texts
+        from core.models_singleton import encode_texts
         return encode_texts(texts, EMBEDDING_DIM)
     resp, err = post_json(
         BGE_EMBEDDING_URL,

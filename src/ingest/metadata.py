@@ -14,7 +14,7 @@ _src = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _src not in sys.path:
     sys.path.insert(0, _src)
 
-from utils import _CN_DIGIT
+from core.utils import _CN_DIGIT
 from ingest.doc_classifier import _classify_legacy, _is_new_format, TYPE_PREFIX_MAP
 
 logger = logging.getLogger(__name__)

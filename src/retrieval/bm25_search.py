@@ -11,7 +11,7 @@ _src = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _src not in sys.path:
     sys.path.insert(0, _src)
 
-from config import BM25_TOP_K, BM25_K1, BM25_B
+from core.config import BM25_TOP_K, BM25_K1, BM25_B
 
 logger = logging.getLogger(__name__)
 

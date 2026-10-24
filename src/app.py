@@ -9,10 +9,10 @@ _src = os.path.dirname(os.path.abspath(__file__))
 if _src not in sys.path:
     sys.path.insert(0, _src)
 
-from utils import setup_windows_console
+from core.utils import setup_windows_console
 setup_windows_console()
 
-from config import (
+from core.config import (
     MYSQL_CONFIG, FINAL_TOP_K, FAISS_TOP_K, BM25_TOP_K, LOG_LEVEL,
     SQL_CONTEXT_CAP, RERANK_SKIP_SINGLE, EMBEDDING_DIM,
     BGE_EMBED_BACKEND, BGE_RERANK_BACKEND,
@@ -26,7 +26,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger("api")
 
-from trace_logging import install_trace_filter, start_trace, clear_trace, submit_with_trace
+from core.trace_logging import install_trace_filter, start_trace, clear_trace, submit_with_trace
 install_trace_filter()
 
 from flask import Flask, request, jsonify
@@ -43,7 +43,7 @@ from retrieval.query_filter import (
 )
 from prompts import get_tag_content, load_prompt_store
 from llm.generator import generate_answer, generate_synthesis_answer
-from prompt_guard import REFUSAL_ANSWER
+from core.prompt_guard import REFUSAL_ANSWER
 
 app = Flask(__name__)
 # 竞赛评测按 UTF-8 文本读响应体，禁用 jsonify 默认的 ASCII 转义（\uXXXX）
@@ -102,7 +102,7 @@ def init_services():
     # 不预热则首问触发懒加载 ~4.5s，实测首问检索三段 4493ms）
     if BGE_EMBED_BACKEND == "local" or BGE_RERANK_BACKEND == "local":
         try:
-            from models_singleton import encode_texts, rerank_scores
+            from core.models_singleton import encode_texts, rerank_scores
             if BGE_EMBED_BACKEND == "local":
                 encode_texts(["预热"], EMBEDDING_DIM)
                 logger.info("本地 embedding 模型已预热")
@@ -894,12 +894,12 @@ def _start_keepalive():
     每 KEEPALIVE_INTERVAL 秒 ping 一次仍在走网关的端点（chat 恒网关；
     embedding/rerank 仅对应开关为 gateway 时），best-effort 失败静默。
     """
-    from config import (
+    from core.config import (
         DEEPSEEK_URL, DEEPSEEK_API_KEY, DEEPSEEK_MODEL,
         BGE_EMBEDDING_URL, BGE_RERANKER_URL, BGE_API_KEY,
         BGE_EMBED_BACKEND, BGE_RERANK_BACKEND, KEEPALIVE_INTERVAL,
     )
-    from http_client import post_json
+    from core.http_client import post_json
 
     if KEEPALIVE_INTERVAL <= 0:
         return

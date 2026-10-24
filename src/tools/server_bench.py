@@ -2,9 +2,9 @@
 """主办方服务器本地模型压测（BGE_EMBED_BACKEND/BGE_RERANK_BACKEND=local 部署后运行）。
 
 模式 1（容器内，模型基准）：
-  docker exec rag-forward-rookie-app python test/server_bench.py models
+  docker exec rag-forward-rookie-app python src/tools/server_bench.py models
 模式 2（宿主机，端到端延迟拆解，需 timing=true 接口）：
-  python test/server_bench.py e2e
+  python src/tools/server_bench.py e2e
 
 结果直接打印，人工记录对照目标值：
   编码 <300ms；精排 20-60 条 x500字 <3s；端到端总计与网关基线对比。
@@ -13,7 +13,7 @@ import os
 import sys
 import time
 
-BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+BASE = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.join(BASE, "src"))
 
 QUERIES = ["什么是机器学习", "2024年经济热词有哪些", "扫码支付的费率是多少"]
@@ -25,8 +25,8 @@ E2E_QUESTIONS = [
 
 
 def bench_models():
-    from config import EMBEDDING_DIM
-    from models_singleton import encode_texts, rerank_scores
+    from core.config import EMBEDDING_DIM
+    from core.models_singleton import encode_texts, rerank_scores
 
     print("=== ① bge-m3 编码 ===")
     encode_texts(["预热"], EMBEDDING_DIM)

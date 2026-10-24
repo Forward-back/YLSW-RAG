@@ -15,11 +15,11 @@ _src = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _src not in sys.path:
     sys.path.insert(0, _src)
 
-from config import (
+from core.config import (
     MYSQL_CONFIG, DEEPSEEK_URL, DEEPSEEK_API_KEY, DEEPSEEK_MODEL,
     API_TIMEOUT, API_MAX_RETRIES,
 )
-from http_client import post_json
+from core.http_client import post_json
 from retrieval.faiss_search import get_bge_embedding
 
 logger = logging.getLogger(__name__)

@@ -46,11 +46,14 @@ YLSW_RAG/
 │                              #   不入 git 仓库，需自行放入后运行 ingest
 ├── src/
 │   ├── app.py                 # Flask API 入口 + 主查询管线
-│   ├── config.py              # 全局配置（自动加载 .env）
-│   ├── http_client.py         # 共享 HTTP 会话 + 分类重试
-│   ├── prompt_guard.py        # 提示词注入防护 / 拒答文案
-│   ├── models_singleton.py    # 本地 BGE 模型单例（懒加载 + 预热）
-│   ├── server_bench.py        # 模型基准 / 端到端延迟测试
+│   ├── core/                  # 基础设施
+│   │   ├── config.py          # 全局配置（自动加载 .env）
+│   │   ├── http_client.py     # 共享 HTTP 会话 + 分类重试
+│   │   ├── prompt_guard.py    # 提示词注入防护 / 拒答文案
+│   │   ├── models_singleton.py# 本地 BGE 模型单例（懒加载 + 预热）
+│   │   ├── trace_logging.py   # trace_id 全链路日志
+│   │   └── utils.py           # 通用工具
+│   ├── tools/server_bench.py  # 模型基准 / 端到端延迟测试
 │   ├── ingest/                # 入库管线：解析 → 分类 → 分块 → 嵌入 → 入库
 │   │   ├── pipeline.py        # 幂等入库（文件哈希去重）+ FAISS 索引构建/自愈
 │   │   ├── chunker.py         # Parent-Child 差异化分块
@@ -165,7 +168,7 @@ curl -X POST http://localhost:6151/chat \
 | 测试集 | `test/produce_question/qa_testset_120.json`：140 题（120 业务题 + 20 SQL 能力题，L1 精确取值 ~ L5 语义结构梯度） |
 | 检索层 | `test/Stage_2/eval_retrieval.py`：47 题 trace，Recall@K / 排序分布 / PR 曲线 / 精排迁移 |
 | 答案层 | `test/Stage_3/full_eval.py` 全量采集 + `answer_judge.py` LLM 裁判（文档级参考 + 表数据聚合视图） |
-| 延迟 | `src/server_bench.py e2e`；`full_eval` 的 timings 可按阶段统计 |
+| 延迟 | `src/tools/server_bench.py e2e`；`full_eval` 的 timings 可按阶段统计 |
 
 当前基线（2026-10）：
 
