@@ -28,7 +28,6 @@ rag_models.tar.gz
 # 第三方 skill 与本地工具配置
 academic-figure-skill/
 .claude/
-.exclude
 
 # 评测输出
 test/result/
