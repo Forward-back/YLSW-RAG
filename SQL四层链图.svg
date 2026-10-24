@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg role="img" aria-labelledby="sql-chain-title sql-chain-desc" viewBox="0 0 1000 480" xmlns="http://www.w3.org/2000/svg"><defs><style>@import url('https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&amp;family=Geist:wght@400;500;600&amp;family=Geist+Mono:wght@400;500;600&amp;display=swap');</style></defs>
+      <title id="sql-chain-title">SQL 路四层链</title>
+      <desc id="sql-chain-desc">自上而下四层：模板链（焦点，零 LLM）、列语义索引、LLM SQL 兜底、执行护栏；每一层未命中则下沉到下一层，命中即返回。</desc>
+
+      <rect width="100%" height="100%" fill="#f5f5f5"/>
+
+      <!-- 方向指示 -->
+      <text x="76" y="112" fill="#7a8399" font-size="8" font-family="'Geist Mono', monospace" letter-spacing="0.10em">命中即返回</text>
+      <line x1="52" y1="124" x2="52" y2="408" stroke="#7a8399" stroke-width="1"/>
+      <path d="M 48,400 L 52,408 L 56,400" fill="none" stroke="#7a8399" stroke-width="1"/>
+      <text x="76" y="424" fill="#7a8399" font-size="8" font-family="'Geist Mono', monospace" letter-spacing="0.10em">未命中下沉</text>
+
+      <!-- L1 模板链 (focal) -->
+      <rect x="112" y="96" width="808" height="72" rx="6" fill="rgba(235,108,54,0.08)" stroke="#eb6c36" stroke-width="1"/>
+      <text x="136" y="138" fill="#eb6c36" font-size="8" font-family="'Geist Mono', monospace" letter-spacing="0.10em">L1 TEMPLATE</text>
+      <text x="264" y="130" fill="#2d3142" font-size="16" font-weight="600" font-family="'Geist', sans-serif">模板链（零 LLM）</text>
+      <text x="264" y="148" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace">极值 · 计数（排序/条件/全表）· 代码反查 · 列举/定点</text>
+      <text x="896" y="138" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="end">毫秒级 · 零失败</text>
+
+      <!-- L2 列语义索引 -->
+      <rect x="112" y="184" width="808" height="72" rx="6" fill="#f5f5f5" stroke="rgba(45,49,66,0.12)" stroke-width="1"/>
+      <text x="136" y="226" fill="#4f5d75" font-size="8" font-family="'Geist Mono', monospace" letter-spacing="0.10em">L2 COLUMN INDEX</text>
+      <text x="264" y="218" fill="#2d3142" font-size="16" font-weight="600" font-family="'Geist', sans-serif">列语义索引</text>
+      <text x="264" y="236" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace">模糊字段问法（"与金额相关的字段"）词重叠直答</text>
+      <text x="896" y="226" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="end">零 SQL · 零 LLM</text>
+
+      <!-- L3 LLM SQL -->
+      <rect x="112" y="272" width="808" height="72" rx="6" fill="#f5f5f5" stroke="rgba(45,49,66,0.12)" stroke-width="1"/>
+      <text x="136" y="314" fill="#4f5d75" font-size="8" font-family="'Geist Mono', monospace" letter-spacing="0.10em">L3 LLM SQL</text>
+      <text x="264" y="306" fill="#2d3142" font-size="16" font-weight="600" font-family="'Geist', sans-serif">LLM SQL（长尾兜底）</text>
+      <text x="264" y="324" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace">schema 剪枝 · 表描述 embedding 语义选表 · few-shot 模式样例</text>
+      <text x="896" y="314" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="end">1-3s</text>
+
+      <!-- L4 执行护栏 -->
+      <rect x="112" y="360" width="808" height="72" rx="6" fill="#f5f5f5" stroke="rgba(45,49,66,0.12)" stroke-width="1"/>
+      <text x="136" y="402" fill="#4f5d75" font-size="8" font-family="'Geist Mono', monospace" letter-spacing="0.10em">L4 GUARD</text>
+      <text x="264" y="394" fill="#2d3142" font-size="16" font-weight="600" font-family="'Geist', sans-serif">执行护栏</text>
+      <text x="264" y="412" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace">SELECT-only 白名单 · 行数上限 · 空结果回退 LLM 重试 · 连接 ping 自愈</text>
+      <text x="896" y="402" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="end">降级为语料路</text>
+
+      <!-- legend -->
+      <line x1="52" y1="448" x2="920" y2="448" stroke="rgba(45,49,66,0.10)" stroke-width="0.8"/>
+      <text x="52" y="466" fill="#4f5d75" font-size="8" font-family="'Geist Mono', monospace" letter-spacing="0.14em">LEGEND</text>
+      <rect x="124" y="458" width="10" height="10" rx="2" fill="rgba(235,108,54,0.08)" stroke="#eb6c36" stroke-width="0.8"/>
+      <text x="142" y="466" fill="#4f5d75" font-size="8" font-family="'Geist Mono', monospace">焦点：确定性快路径</text>
+      <text x="300" y="466" fill="#7a8399" font-size="8" font-family="'Geist Mono', monospace" font-style="italic">自上而下逐层下沉，高层命中即短路返回</text>
+    </svg>

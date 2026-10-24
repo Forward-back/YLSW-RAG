@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>YLSW-RAG 部署拓扑</title>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --paper: #f5f5f5; --ink: #2d3142; --muted: #4f5d75; --soft: #7a8399;
+    --rule: rgba(45,49,66,0.12); --accent: #eb6c36;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: var(--paper); color: var(--ink); font-family: 'Geist', sans-serif; padding: 48px 32px; }
+  .wrap { max-width: 1120px; margin: 0 auto; }
+  .eyebrow { font-family: 'Geist Mono', monospace; font-size: 8px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--soft); margin-bottom: 12px; }
+  h1 { font-family: 'Instrument Serif', serif; font-size: 28px; font-weight: 400; margin-bottom: 8px; }
+  .subtitle { font-size: 12px; color: var(--muted); margin-bottom: 32px; }
+  .diagram { width: 100%; overflow-x: auto; }
+  svg { display: block; min-width: 1120px; width: 100%; height: auto; }
+  .footer { font-family: 'Geist Mono', monospace; font-size: 8px; color: var(--soft); letter-spacing: 0.06em; border-top: 1px solid var(--rule); padding-top: 12px; margin-top: 24px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="eyebrow">Deployment Topology</div>
+  <h1>YLSW-RAG 部署拓扑</h1>
+  <div class="subtitle">两镜像：app（代码 + torch + FlagEmbedding）+ MySQL 官方镜像 · models 挂载、密钥运行时注入</div>
+
+  <div class="diagram">
+    <svg role="img" aria-labelledby="deploy-topo-title deploy-topo-desc" viewBox="0 0 1120 560" xmlns="http://www.w3.org/2000/svg">
+      <title id="deploy-topo-title">YLSW-RAG 部署拓扑图</title>
+      <desc id="deploy-topo-desc">评分方经 6151 端口访问 compose 桥接网络内的 app 容器；app 容器挂载宿主机 models 目录，连接同网络的 mysql 容器（3306），mysql 发布 6152 回环端口并挂载持久化数据卷。</desc>
+
+      <defs>
+        <marker id="arr-muted" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+          <polygon points="0 0, 8 3, 0 6" fill="#4f5d75"/>
+        </marker>
+        <marker id="arr-link" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+          <polygon points="0 0, 8 3, 0 6" fill="#2e5aa8"/>
+        </marker>
+      </defs>
+
+      <rect width="100%" height="100%" fill="#f5f5f5"/>
+
+      <!-- zone (drawn first) -->
+      <rect x="48" y="160" width="1024" height="224" rx="8" fill="rgba(45,49,66,0.02)" stroke="rgba(45,49,66,0.20)" stroke-width="0.8" stroke-dasharray="4,4"/>
+      <rect x="60" y="156" width="188" height="14" rx="2" fill="#f5f5f5"/>
+      <text x="68" y="167" fill="rgba(45,49,66,0.40)" font-size="8" font-family="'Geist Mono', monospace" letter-spacing="0.14em">DOCKER · COMPOSE NETWORK</text>
+
+      <!-- arrows -->
+      <line x1="188" y1="104" x2="188" y2="208" stroke="#2e5aa8" stroke-width="1" marker-end="url(#arr-link)"/>
+      <rect x="196" y="142" width="76" height="12" rx="2" fill="#f5f5f5"/>
+      <text x="200" y="151" fill="#7a8399" font-size="8" font-family="'Geist Mono', monospace" letter-spacing="0.06em">HTTP:6151</text>
+
+      <line x1="412" y1="288" x2="636" y2="288" stroke="#4f5d75" stroke-width="1" marker-end="url(#arr-muted)"/>
+      <rect x="486" y="264" width="76" height="12" rx="2" fill="#f5f5f5"/>
+      <text x="524" y="273" fill="#7a8399" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.06em">mysql:3306</text>
+
+      <!-- 评分方 -->
+      <rect x="112" y="48" width="152" height="56" rx="6" fill="#f5f5f5"/>
+      <rect x="112" y="48" width="152" height="56" rx="6" fill="rgba(79,93,117,0.10)" stroke="#7a8399" stroke-width="1"/>
+      <text x="188" y="72" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">评分方 / 调用端</text>
+      <text x="188" y="88" fill="#4f5d75" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle">POST /chat</text>
+
+      <!-- app 容器 (focal) -->
+      <rect x="112" y="216" width="300" height="144" rx="6" fill="#f5f5f5"/>
+      <rect x="112" y="216" width="300" height="144" rx="6" fill="rgba(235,108,54,0.08)" stroke="#eb6c36" stroke-width="1"/>
+      <rect x="120" y="222" width="32" height="12" rx="2" fill="transparent" stroke="rgba(235,108,54,0.50)" stroke-width="0.8"/>
+      <text x="136" y="231" fill="rgba(235,108,54,0.90)" font-size="7" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">POD</text>
+      <rect x="372" y="222" width="24" height="12" rx="2" fill="rgba(45,49,66,0.06)" stroke="rgba(45,49,66,0.25)" stroke-width="0.8"/>
+      <text x="384" y="231" fill="#4f5d75" font-size="7" font-family="'Geist Mono', monospace" text-anchor="middle">x1</text>
+      <text x="132" y="256" fill="#2d3142" font-size="14" font-weight="600" font-family="'Geist', sans-serif">app 容器</text>
+
+      <rect x="124" y="268" width="276" height="24" rx="4" fill="rgba(45,49,66,0.05)" stroke="#4f5d75" stroke-width="0.8"/>
+      <text x="132" y="284" fill="#2d3142" font-size="9" font-family="'Geist', sans-serif">rag-forward-rookie-app</text>
+      <text x="392" y="284" fill="#7a8399" font-size="8" font-family="'Geist Mono', monospace" text-anchor="end">latest</text>
+
+      <rect x="124" y="300" width="276" height="24" rx="4" fill="rgba(45,49,66,0.05)" stroke="#4f5d75" stroke-width="0.8"/>
+      <text x="132" y="316" fill="#2d3142" font-size="9" font-family="'Geist', sans-serif">models/ → /app/models</text>
+      <text x="392" y="316" fill="#7a8399" font-size="8" font-family="'Geist Mono', monospace" text-anchor="end">mount</text>
+
+      <text x="262" y="376" fill="#7a8399" font-size="12" font-family="'Instrument Serif', serif" font-style="italic" text-anchor="middle">.env 运行时注入，不进镜像</text>
+
+      <!-- mysql 容器 -->
+      <rect x="644" y="216" width="300" height="144" rx="6" fill="#f5f5f5"/>
+      <rect x="644" y="216" width="300" height="144" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+      <rect x="652" y="222" width="32" height="12" rx="2" fill="transparent" stroke="rgba(45,49,66,0.40)" stroke-width="0.8"/>
+      <text x="668" y="231" fill="rgba(45,49,66,0.80)" font-size="7" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">POD</text>
+      <rect x="904" y="222" width="24" height="12" rx="2" fill="rgba(45,49,66,0.06)" stroke="rgba(45,49,66,0.25)" stroke-width="0.8"/>
+      <text x="916" y="231" fill="#4f5d75" font-size="7" font-family="'Geist Mono', monospace" text-anchor="middle">x1</text>
+      <text x="664" y="256" fill="#2d3142" font-size="14" font-weight="600" font-family="'Geist', sans-serif">mysql 容器</text>
+
+      <rect x="656" y="268" width="276" height="24" rx="4" fill="rgba(45,49,66,0.05)" stroke="#4f5d75" stroke-width="0.8"/>
+      <text x="664" y="284" fill="#2d3142" font-size="9" font-family="'Geist', sans-serif">mysql</text>
+      <text x="924" y="284" fill="#7a8399" font-size="8" font-family="'Geist Mono', monospace" text-anchor="end">8.4.11</text>
+
+      <rect x="656" y="300" width="276" height="24" rx="4" fill="rgba(45,49,66,0.05)" stroke="#4f5d75" stroke-width="0.8"/>
+      <text x="664" y="316" fill="#2d3142" font-size="9" font-family="'Geist', sans-serif">数据卷 mysql_data</text>
+      <text x="924" y="316" fill="#7a8399" font-size="8" font-family="'Geist Mono', monospace" text-anchor="end">persistent</text>
+
+      <text x="794" y="376" fill="#7a8399" font-size="12" font-family="'Instrument Serif', serif" font-style="italic" text-anchor="middle">127.0.0.1:6152 仅本机回环</text>
+
+      <!-- legend -->
+      <line x1="48" y1="468" x2="1072" y2="468" stroke="rgba(45,49,66,0.10)" stroke-width="0.8"/>
+      <text x="48" y="488" fill="#4f5d75" font-size="8" font-family="'Geist Mono', monospace" letter-spacing="0.14em">LEGEND</text>
+      <rect x="120" y="480" width="10" height="10" rx="2" fill="rgba(235,108,54,0.08)" stroke="#eb6c36" stroke-width="0.8"/>
+      <text x="138" y="488" fill="#4f5d75" font-size="8" font-family="'Geist Mono', monospace">焦点：自建应用镜像</text>
+      <line x1="264" y1="485" x2="284" y2="485" stroke="#2e5aa8" stroke-width="1"/>
+      <text x="292" y="488" fill="#4f5d75" font-size="8" font-family="'Geist Mono', monospace">外部入站</text>
+      <line x1="372" y1="485" x2="392" y2="485" stroke="#4f5d75" stroke-width="1"/>
+      <text x="400" y="488" fill="#4f5d75" font-size="8" font-family="'Geist Mono', monospace">内部连接</text>
+      <text x="486" y="488" fill="#7a8399" font-size="8" font-family="'Geist Mono', monospace" font-style="italic">app 镜像由 docker save tar 上传加载；MySQL 镜像由 compose 自动拉取</text>
+    </svg>
+  </div>
+
+  <div class="footer">YLSW-RAG · 部署拓扑 · 详见 部署手册.md</div>
+</div>
+</body>
+</html>
