@@ -18,7 +18,7 @@ BASE = Path(__file__).resolve().parent.parent
 sys_path = str(BASE)
 import sys
 sys.path.insert(0, sys_path)
-from src.config import DEEPSEEK_URL, DEEPSEEK_API_KEY, DEEPSEEK_MODEL  # noqa: E402
+from src.core.config import DEEPSEEK_URL, DEEPSEEK_API_KEY, DEEPSEEK_MODEL  # noqa: E402
 
 DB = dict(host="127.0.0.1", port=3307, user="root", password="ABC123", database="fuck_rag")
 SKELETON = Path(__file__).parent / "qa_testset_120.json"

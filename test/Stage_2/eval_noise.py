@@ -39,7 +39,7 @@ def pick_10():
 
 
 def gen_variants(q, retries=3):
-    from src.config import DEEPSEEK_URL, DEEPSEEK_API_KEY, DEEPSEEK_MODEL
+    from src.core.config import DEEPSEEK_URL, DEEPSEEK_API_KEY, DEEPSEEK_MODEL
     prompt = VARIANT_PROMPT.format(question=q["问题"])
     for attempt in range(retries):
         try:
