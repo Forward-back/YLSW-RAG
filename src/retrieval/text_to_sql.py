@@ -673,6 +673,94 @@ class TextToSQLEngine:
             self._dept_values = sorted(vals, key=len, reverse=True)
         return [d for d in self._dept_values if d in question]
 
+    def _try_entity_profile_template(self, question: str) -> tuple[str, str] | None:
+        """表格实体概况：'介绍一下京珠运营公司' → 按实体类型聚合表内数据。
+
+        实体型问题不是数值查询，但答案完全在表里（公司/路段/收费部/收费站
+        的分布与明细）。按实体具体度选聚合维度：
+        - 收费站 → 该行全部字段
+        - 运营公司 → 按联网路段分组的站数 + 收费部
+        - 路段/收费部 → 按运营公司分组
+        """
+        if not any(w in question for w in (
+            "介绍", "简介", "概况", "情况", "分布", "负责", "管理",
+            "是什么", "有哪些", "哪些",
+        )):
+            return None
+        # 计数/排序类交给计数模板（其先行）
+        if any(w in question for w in ("多少", "几个", "几家", "数量", "最多", "最少", "排名")):
+            return None
+        real_name = self._table_real_name("基础信息统计")
+        if not real_name:
+            return None
+
+        # 收费站实体（最具体）：返回该站全部字段
+        if self._entity_values is None:
+            self._entity_values = self._load_entities()
+        station_hits = [e for e in self._entity_values if e in question]
+        if station_hits:
+            in_list = ", ".join(f"'{s}'" for s in station_hits[:3])
+            sql = (
+                "SELECT JSON_UNQUOTE(JSON_EXTRACT(row_data, '$.\"收费站名称\"')) AS 收费站名称, "
+                "JSON_UNQUOTE(JSON_EXTRACT(row_data, '$.\"收费站代码\"')) AS 收费站代码, "
+                "JSON_UNQUOTE(JSON_EXTRACT(row_data, '$.\"地址\"')) AS 地址, "
+                "JSON_UNQUOTE(JSON_EXTRACT(row_data, '$.\"经度\"')) AS 经度, "
+                "JSON_UNQUOTE(JSON_EXTRACT(row_data, '$.\"纬度\"')) AS 纬度, "
+                "JSON_UNQUOTE(JSON_EXTRACT(row_data, '$.\"代投点\"')) AS 代投点, "
+                "JSON_UNQUOTE(JSON_EXTRACT(row_data, '$.\"隶属运营公司\"')) AS 隶属运营公司, "
+                "JSON_UNQUOTE(JSON_EXTRACT(row_data, '$.\"隶属路段联网名称\"')) AS 隶属路段联网名称, "
+                "JSON_UNQUOTE(JSON_EXTRACT(row_data, '$.\"隶属路段集团收费部名称\"')) AS 收费部 "
+                f"FROM tables_structured WHERE table_name = '{real_name}' AND "
+                f"JSON_UNQUOTE(JSON_EXTRACT(row_data, '$.\"收费站名称\"')) IN ({in_list}) LIMIT 3"
+            )
+            logger.info(f"[SQL实体概况] 收费站 {station_hits[:3]}: {question[:60]}")
+            return sql, "基础信息统计"
+
+        companies = self._companies_in(question)
+        if companies:
+            in_list = ", ".join(f"'{c}'" for c in companies)
+            sql = (
+                "SELECT JSON_UNQUOTE(JSON_EXTRACT(row_data, '$.\"隶属运营公司\"')) AS 运营公司, "
+                "JSON_UNQUOTE(JSON_EXTRACT(row_data, '$.\"隶属路段联网名称\"')) AS 联网路段, "
+                "COUNT(*) AS 收费站数量, "
+                "GROUP_CONCAT(DISTINCT JSON_UNQUOTE(JSON_EXTRACT(row_data, '$.\"隶属路段集团收费部名称\"'))) AS 收费部 "
+                f"FROM tables_structured WHERE table_name = '{real_name}' AND "
+                f"JSON_UNQUOTE(JSON_EXTRACT(row_data, '$.\"隶属运营公司\"')) IN ({in_list}) "
+                "GROUP BY 运营公司, 联网路段"
+            )
+            logger.info(f"[SQL实体概况] 运营公司 {companies}: {question[:60]}")
+            return sql, "基础信息统计"
+
+        roads = self._road_in(question)
+        if roads:
+            in_list = ", ".join(f"'{r}'" for r in roads)
+            sql = (
+                "SELECT JSON_UNQUOTE(JSON_EXTRACT(row_data, '$.\"隶属路段联网名称\"')) AS 联网路段, "
+                "JSON_UNQUOTE(JSON_EXTRACT(row_data, '$.\"隶属运营公司\"')) AS 运营公司, "
+                "COUNT(*) AS 收费站数量 "
+                f"FROM tables_structured WHERE table_name = '{real_name}' AND "
+                f"JSON_UNQUOTE(JSON_EXTRACT(row_data, '$.\"隶属路段联网名称\"')) IN ({in_list}) "
+                "GROUP BY 联网路段, 运营公司"
+            )
+            logger.info(f"[SQL实体概况] 联网路段 {roads}: {question[:60]}")
+            return sql, "基础信息统计"
+
+        depts = self._dept_in(question)
+        if depts:
+            in_list = ", ".join(f"'{d}'" for d in depts)
+            sql = (
+                "SELECT JSON_UNQUOTE(JSON_EXTRACT(row_data, '$.\"隶属路段集团收费部名称\"')) AS 收费部, "
+                "JSON_UNQUOTE(JSON_EXTRACT(row_data, '$.\"隶属运营公司\"')) AS 运营公司, "
+                "JSON_UNQUOTE(JSON_EXTRACT(row_data, '$.\"隶属路段联网名称\"')) AS 联网路段, "
+                "COUNT(*) AS 收费站数量 "
+                f"FROM tables_structured WHERE table_name = '{real_name}' AND "
+                f"JSON_UNQUOTE(JSON_EXTRACT(row_data, '$.\"隶属路段集团收费部名称\"')) IN ({in_list}) "
+                "GROUP BY 收费部, 运营公司, 联网路段"
+            )
+            logger.info(f"[SQL实体概况] 收费部 {depts}: {question[:60]}")
+            return sql, "基础信息统计"
+        return None
+
     def _try_extreme_template(self, question: str) -> tuple[str, str] | None:
         """极值模板：'经度最大的收费站' → ORDER BY CAST(数值列) LIMIT 1 取名。"""
         if not any(w in question for w in ("最大", "最小")):
@@ -817,6 +905,13 @@ class TextToSQLEngine:
             for key in self._hit_table_keys(question):
                 logger.info(f"  SQL 预筛命中表: {key}")
             return True
+        # 表内实体值（公司/路段/收费部/站名/代投点）出现在问题中 = 表格相关意图，
+        # 裸实体名（"介绍仙桃东站"）不命中触发词也须走 SQL
+        if self._entity_values is None:
+            self._entity_values = self._load_entities()
+        if any(e in question for e in self._entity_values):
+            logger.info("  SQL 预筛命中表内实体")
+            return True
         if any(kw in question for kw in SQL_GENERIC_TRIGGERS):
             logger.info("  SQL 预筛命中计算意图")
             return True
@@ -854,7 +949,7 @@ class TextToSQLEngine:
             logger.debug(f"[SQL] 预筛未命中，跳过: {question[:60]}")
             return None
 
-        # 模板优先：极值 > 计数 > 代码反查 > 列举/定点查询，确定性出 SQL，零 LLM 成本
+        # 模板优先：极值 > 计数 > 实体概况 > 代码反查 > 列举/定点查询，确定性出 SQL，零 LLM 成本
         table_key = None
         use_fields = False
         hint_note = ""
@@ -866,44 +961,48 @@ class TextToSQLEngine:
             if count_hit:
                 sql, table_key = count_hit
             else:
-                code_hit = self._try_code_lookup(question)
-                if code_hit:
-                    sql, table_key = code_hit
+                profile_hit = self._try_entity_profile_template(question)
+                if profile_hit:
+                    sql, table_key, hint_note = profile_hit[0], profile_hit[1], "（表内实体概况聚合）"
                 else:
-                    template_hit = self._try_template_sql(question)
-                    if template_hit:
-                        sql, table_key = template_hit[0], template_hit[1]
-                        hint_note = template_hit[2] if len(template_hit) > 2 else ""
+                    code_hit = self._try_code_lookup(question)
+                    if code_hit:
+                        sql, table_key = code_hit
                     else:
-                        entity_hit = self._try_entity_template(question)
-                        if entity_hit:
-                            sql, table_key = entity_hit
+                        template_hit = self._try_template_sql(question)
+                        if template_hit:
+                            sql, table_key = template_hit[0], template_hit[1]
+                            hint_note = template_hit[2] if len(template_hit) > 2 else ""
                         else:
-                            field_hit = self._try_field_dict_template(question)
-                            if field_hit:
-                                sql, table_key = field_hit
+                            entity_hit = self._try_entity_template(question)
+                            if entity_hit:
+                                sql, table_key = entity_hit
                             else:
-                                # 模糊字段问法兜底：列语义索引词重叠直接答（零 SQL 零 LLM）
-                                if any(k in question for k in ("字段", "列", "含义")):
-                                    cols = self._search_columns(question)
-                                    if cols:
-                                        body = "\n".join(
-                                            f"{c['column']}（{c['table'][:40]}）: {c['text'][:150]}"
-                                            for c in cols
-                                        )
-                                        logger.info(
-                                            f"[SQL列索引] 模糊字段命中 {len(cols)} 列 ({_ms()})"
-                                        )
-                                        return {
-                                            "sql": "",
-                                            "result": [],
-                                            "answer_hint": f"[字段语义匹配]\n{body}",
-                                        }
-                                # LLM 路径：schema 剪枝 + 语义选表兜底 + few-shot 生成
-                                llm_hit = self._llm_query(question)
-                                if llm_hit:
-                                    sql, table_key = llm_hit
-                                    use_fields = True
+                                field_hit = self._try_field_dict_template(question)
+                                if field_hit:
+                                    sql, table_key = field_hit
+                                else:
+                                    # 模糊字段问法兜底：列语义索引词重叠直接答（零 SQL 零 LLM）
+                                    if any(k in question for k in ("字段", "列", "含义")):
+                                        cols = self._search_columns(question)
+                                        if cols:
+                                            body = "\n".join(
+                                                f"{c['column']}（{c['table'][:40]}）: {c['text'][:150]}"
+                                                for c in cols
+                                            )
+                                            logger.info(
+                                                f"[SQL列索引] 模糊字段命中 {len(cols)} 列 ({_ms()})"
+                                            )
+                                            return {
+                                                "sql": "",
+                                                "result": [],
+                                                "answer_hint": f"[字段语义匹配]\n{body}",
+                                            }
+                                    # LLM 路径：schema 剪枝 + 语义选表兜底 + few-shot 生成
+                                    llm_hit = self._llm_query(question)
+                                    if llm_hit:
+                                        sql, table_key = llm_hit
+                                        use_fields = True
 
         sql = _strip_code_fences(sql)
         logger.info(f"[SQL] 生成: {sql[:200]} ({_ms()})")
