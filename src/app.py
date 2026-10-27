@@ -334,7 +334,7 @@ def _run_query(question: str, collect_timing: bool = False, collect_trace: bool 
                 future_meta = submit_with_trace(
                     executor, meta_searcher.search, entities, 20, query_type
                 )
-                future_sql = submit_with_trace(executor, sql_engine.query, expanded_query)
+                future_sql = submit_with_trace(executor, sql_engine.query, expanded_query, question)
 
                 faiss_hits = _merge_faiss_multi([f.result() for f in faiss_futures])
                 t_faiss = time.perf_counter()

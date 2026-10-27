@@ -673,7 +673,8 @@ class TextToSQLEngine:
             self._dept_values = sorted(vals, key=len, reverse=True)
         return [d for d in self._dept_values if d in question]
 
-    def _try_entity_profile_template(self, question: str) -> tuple[str, str] | None:
+    def _try_entity_profile_template(self, question: str,
+                                      original: str | None = None) -> tuple[str, str] | None:
         """表格实体概况：'介绍一下京珠运营公司' → 按实体类型聚合表内数据。
 
         实体型问题不是数值查询，但答案完全在表里（公司/路段/收费部/收费站
@@ -682,13 +683,16 @@ class TextToSQLEngine:
         - 运营公司 → 按联网路段分组的站数 + 收费部
         - 路段/收费部 → 按运营公司分组
         """
-        if not any(w in question for w in (
+        # 规划器改写会丢触发词（"介绍一下京珠运营公司" → "京珠运营公司"），
+        # 触发词与实体匹配用 改写+原始 合并文本
+        text = question + " " + (original or "")
+        if not any(w in text for w in (
             "介绍", "简介", "概况", "情况", "分布", "负责", "管理",
             "是什么", "有哪些", "哪些",
         )):
             return None
         # 计数/排序类交给计数模板（其先行）
-        if any(w in question for w in ("多少", "几个", "几家", "数量", "最多", "最少", "排名")):
+        if any(w in text for w in ("多少", "几个", "几家", "数量", "最多", "最少", "排名")):
             return None
         real_name = self._table_real_name("基础信息统计")
         if not real_name:
@@ -697,7 +701,7 @@ class TextToSQLEngine:
         # 收费站实体（最具体）：返回该站全部字段
         if self._entity_values is None:
             self._entity_values = self._load_entities()
-        station_hits = [e for e in self._entity_values if e in question]
+        station_hits = [e for e in self._entity_values if e in text]
         if station_hits:
             in_list = ", ".join(f"'{s}'" for s in station_hits[:3])
             sql = (
@@ -716,7 +720,7 @@ class TextToSQLEngine:
             logger.info(f"[SQL实体概况] 收费站 {station_hits[:3]}: {question[:60]}")
             return sql, "基础信息统计"
 
-        companies = self._companies_in(question)
+        companies = self._companies_in(text)
         if companies:
             in_list = ", ".join(f"'{c}'" for c in companies)
             sql = (
@@ -731,7 +735,7 @@ class TextToSQLEngine:
             logger.info(f"[SQL实体概况] 运营公司 {companies}: {question[:60]}")
             return sql, "基础信息统计"
 
-        roads = self._road_in(question)
+        roads = self._road_in(text)
         if roads:
             in_list = ", ".join(f"'{r}'" for r in roads)
             sql = (
@@ -745,7 +749,7 @@ class TextToSQLEngine:
             logger.info(f"[SQL实体概况] 联网路段 {roads}: {question[:60]}")
             return sql, "基础信息统计"
 
-        depts = self._dept_in(question)
+        depts = self._dept_in(text)
         if depts:
             in_list = ", ".join(f"'{d}'" for d in depts)
             sql = (
@@ -917,7 +921,7 @@ class TextToSQLEngine:
             return True
         return False
 
-    def query(self, question: str) -> dict | None:
+    def query(self, question: str, original: str | None = None) -> dict | None:
         """执行 Text-to-SQL 查询（带外层兜底）。
 
         SQL 路任何内部异常（连接失效/模板异常等）降级为 None，
@@ -930,12 +934,12 @@ class TextToSQLEngine:
             logger.warning(f"[SQL] 连接自愈失败，SQL 路降级: {e}")
             return None
         try:
-            return self._query_impl(question)
+            return self._query_impl(question, original)
         except Exception as e:
             logger.warning(f"[SQL] 查询异常，SQL 路降级: {e}", exc_info=True)
             return None
 
-    def _query_impl(self, question: str) -> dict | None:
+    def _query_impl(self, question: str, original: str | None = None) -> dict | None:
         """执行 Text-to-SQL 查询：模板优先，LLM 生成兜底。
 
         Returns: {"sql": "...", "result": [...], "answer_hint": "..."} 或 None
@@ -961,7 +965,7 @@ class TextToSQLEngine:
             if count_hit:
                 sql, table_key = count_hit
             else:
-                profile_hit = self._try_entity_profile_template(question)
+                profile_hit = self._try_entity_profile_template(question, original)
                 if profile_hit:
                     sql, table_key, hint_note = profile_hit[0], profile_hit[1], "（表内实体概况聚合）"
                 else:
