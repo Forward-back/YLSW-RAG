@@ -67,7 +67,7 @@ python -m src.ingest.pipeline
 # gateway 开关对应的网关 serverless 实例提前拉起（冷启动 40-60s）。
 # 失败不阻断启动，评分前由健康检查兜底。
 echo "===== Warming up models (best-effort) ====="
-python - <<'PYEOF'
+python - <<'PYEOF' || echo "  warmup failed (non-fatal, continue)"
 import os
 from src.core.config import BGE_EMBED_BACKEND, BGE_RERANK_BACKEND
 

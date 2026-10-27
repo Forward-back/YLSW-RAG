@@ -17,7 +17,7 @@ if _src not in sys.path:
 os.environ.setdefault("HF_HUB_OFFLINE", "1")
 os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
 
-from core.config import LOCAL_MODELS_DIR, LOCAL_MODEL_THREADS
+from .config import LOCAL_MODELS_DIR, LOCAL_MODEL_THREADS
 
 logger = logging.getLogger(__name__)
 
